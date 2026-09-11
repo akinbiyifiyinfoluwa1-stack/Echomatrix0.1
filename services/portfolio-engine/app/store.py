@@ -35,7 +35,7 @@ class PortfolioStore:
                     "record_id": record_id,
                     "record_type": "portfolio_state",
                     "owner_id": portfolio.portfolio_id,
-                    "symbol": None,
+                    "symbol": "",
                     "payload": payload,
                     "created_at": now,
                     "updated_at": now,
