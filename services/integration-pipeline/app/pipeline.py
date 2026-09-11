@@ -29,12 +29,13 @@ class EchoMatrixPipeline:
             "allocation": os.getenv("CAPITAL_ALLOCATION_URL", "http://capital-allocation-engine:8000"),
             "orchestration": os.getenv("ORCHESTRATION_URL", "http://orchestration-engine:8000"),
             "simulation": os.getenv("SIMULATION_ENGINE_URL", "http://simulation-engine:8000"),
+            "portfolio": os.getenv("PORTFOLIO_ENGINE_URL", "http://portfolio-engine:8000"),
             "workflow": os.getenv("WORKFLOW_ENGINE_URL", "http://workflow-engine:8000"),
             "persistence": os.getenv("PERSISTENCE_URL", "http://persistence-layer:8000"),
         }
 
-    async def _get(self, client: httpx.AsyncClient, service: str, path: str) -> dict:
-        response = await client.get(f"{self.services[service]}{path}")
+    async def _get(self, client: httpx.AsyncClient, service: str, path: str, params: dict | None = None) -> dict:
+        response = await client.get(f"{self.services[service]}{path}", params=params)
         response.raise_for_status()
         return response.json()
 
@@ -47,6 +48,7 @@ class EchoMatrixPipeline:
         correlation_id = str(uuid4())
         stages: list[str] = []
         simulation_fill = None
+        portfolio_state = None
         research = None
         ai_analysis = None
 
@@ -56,6 +58,12 @@ class EchoMatrixPipeline:
 
             workflow = await self._post(client, "workflow", "/workflows", {})
             stages.append("workflow")
+
+            portfolio_state = await self._post(client, "portfolio", "/accounts", {
+                "account_id": request.account_id,
+                "initial_cash": str(request.initial_cash),
+            })
+            stages.append("portfolio-state")
 
             strategy = await self._post(client, "strategy", "/evaluate", {
                 "symbol": request.symbol,
@@ -132,7 +140,7 @@ class EchoMatrixPipeline:
                 quantity = allocated_value / request.price
                 simulation_fill = await self._post(client, "simulation", "/simulate", {
                     "account_id": request.account_id,
-                    "initial_cash": str(request.portfolio_equity),
+                    "initial_cash": str(request.initial_cash),
                     "instrument_symbol": request.symbol,
                     "side": decision["action"],
                     "quantity": str(quantity),
@@ -140,6 +148,24 @@ class EchoMatrixPipeline:
                     "fee_rate": str(request.fee_rate),
                 })
                 stages.append("simulation")
+
+                portfolio_state = await self._post(client, "portfolio", f"/accounts/{request.account_id}/fills", {
+                    "symbol": request.symbol,
+                    "asset_class": "crypto" if "/" in request.symbol and request.symbol.endswith("USD") else "other",
+                    "side": decision["action"],
+                    "quantity": str(quantity),
+                    "price": str(request.price),
+                    "fee": str(Decimal(str(quantity)) * request.price * request.fee_rate),
+                    "mark_price": str(request.price),
+                })
+                stages.append("portfolio-update")
+            else:
+                portfolio_state = await self._get(
+                    client,
+                    "portfolio",
+                    f"/accounts/{request.account_id}",
+                    params={"initial_cash": str(request.initial_cash)},
+                )
 
             persisted_id = None
             audit_id = None
@@ -160,6 +186,7 @@ class EchoMatrixPipeline:
                         "allocation": allocation,
                         "decision": decision,
                         "simulation_fill": simulation_fill,
+                        "portfolio_state": portfolio_state,
                     },
                     "created_at": now,
                     "updated_at": now,
@@ -178,14 +205,16 @@ class EchoMatrixPipeline:
             ]
             if simulation_fill:
                 events.append(("simulation.fill", "simulation"))
-            events.append(("outcome.recorded", "integration-pipeline"))
+                events.append(("outcome.recorded", "portfolio-engine"))
+            else:
+                events.append(("outcome.recorded", "integration-pipeline"))
 
             for event_type, source in events:
                 await self._post(client, "workflow", f"/workflows/{workflow['workflow_id']}/events", {
                     "correlation_id": workflow["correlation_id"],
                     "event_type": event_type,
                     "source": source,
-                    "payload": {"symbol": request.symbol, "correlation_id": correlation_id},
+                    "payload": {"symbol": request.symbol, "correlation_id": correlation_id, "account_id": request.account_id},
                 })
             stages.append("workflow-events")
 
@@ -204,5 +233,6 @@ class EchoMatrixPipeline:
             allocation_decision=allocation,
             persisted_record_id=persisted_id,
             simulation_fill=simulation_fill,
+            portfolio_state=portfolio_state,
             audit_record_id=audit_id,
         )
