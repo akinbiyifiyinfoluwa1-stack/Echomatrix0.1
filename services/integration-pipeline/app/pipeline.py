@@ -1,7 +1,8 @@
 """HTTP coordinator connecting EchoMatrix services end-to-end.
 
-The pipeline is simulation-first: it can call the intelligence services and
-persist the resulting decision, but it never sends an order to a broker.
+The pipeline is simulation-first: intelligence produces a decision, approved
+capital can become a paper fill, and the complete trace can be persisted.
+No broker or real-money execution is performed here.
 """
 import os
 from decimal import Decimal
@@ -26,6 +27,7 @@ class EchoMatrixPipeline:
             "risk": os.getenv("RISK_ENGINE_URL", "http://risk-engine:8000"),
             "allocation": os.getenv("CAPITAL_ALLOCATION_URL", "http://capital-allocation-engine:8000"),
             "orchestration": os.getenv("ORCHESTRATION_URL", "http://orchestration-engine:8000"),
+            "simulation": os.getenv("SIMULATION_ENGINE_URL", "http://simulation-engine:8000"),
             "workflow": os.getenv("WORKFLOW_ENGINE_URL", "http://workflow-engine:8000"),
             "persistence": os.getenv("PERSISTENCE_URL", "http://persistence-layer:8000"),
         }
@@ -43,23 +45,20 @@ class EchoMatrixPipeline:
     async def run(self, request: PipelineRequest) -> PipelineResult:
         correlation_id = str(uuid4())
         stages: list[str] = []
+        simulation_fill = None
 
         async with httpx.AsyncClient(timeout=20) as client:
-            # 1. Verify the sensory layer is reachable.
             await self._get(client, "market-data", "/health")
             stages.append("market-data")
 
-            # 2. Record the workflow start before downstream decisions.
             workflow = await self._post(client, "workflow", "/workflows", {})
             stages.append("workflow")
 
-            # 3. Research and strategy are represented by their service contracts.
             research = await self._get(client, "research", "/health")
             stages.append("research")
             strategy = await self._get(client, "strategy", "/health")
             stages.append("strategy")
 
-            # 4. Ask the orchestration engine to combine intelligence + risk constraints.
             decision_payload = {
                 "symbol": request.symbol,
                 "price": str(request.price),
@@ -76,7 +75,22 @@ class EchoMatrixPipeline:
             decision = await self._post(client, "orchestration", "/decision", decision_payload)
             stages.extend(["ai-core", "risk", "capital-allocation", "decision"])
 
-            # 5. Persist the normalized decision as the system's permanent record.
+            action = decision["action"]
+            allocated_value = Decimal(str(decision["allowed_position_value"]))
+
+            if action in {"buy", "sell"} and allocated_value > 0:
+                quantity = allocated_value / request.price
+                simulation_fill = await self._post(client, "simulation", "/simulate", {
+                    "account_id": "pipeline-demo",
+                    "initial_cash": str(request.portfolio_equity),
+                    "instrument_symbol": request.symbol,
+                    "side": action,
+                    "quantity": str(quantity),
+                    "market_price": str(request.price),
+                    "fee_rate": "0.001",
+                })
+                stages.append("simulation")
+
             persisted_id = None
             audit_id = None
             if request.persist:
@@ -89,12 +103,13 @@ class EchoMatrixPipeline:
                     "symbol": request.symbol,
                     "payload": {
                         "correlation_id": correlation_id,
-                        "action": decision["action"],
+                        "action": action,
                         "confidence": decision["confidence"],
                         "allocated_value": decision["allowed_position_value"],
                         "risk_amount": decision["risk_amount"],
                         "research_health": research,
                         "strategy_health": strategy,
+                        "simulation_fill": simulation_fill,
                     },
                     "created_at": now,
                     "updated_at": now,
@@ -102,7 +117,6 @@ class EchoMatrixPipeline:
                 audit_id = stored["record_id"]
                 stages.append("persistence")
 
-            # 6. Close the workflow with a simulation-first event.
             events = [
                 ("market.update", "market-data"),
                 ("research.ready", "research"),
@@ -112,23 +126,39 @@ class EchoMatrixPipeline:
                 ("capital.allocation", "capital-allocation"),
                 ("trade.decision", "orchestration"),
             ]
+            if simulation_fill is not None:
+                events.append(("simulation.fill", "simulation"))
+                events.append(("outcome.recorded", "integration-pipeline"))
+            if request.persist:
+                events.append(("memory.written", "persistence"))
+
             for event_type, source in events:
-                await self._post(client, "workflow", f"/workflows/{workflow['workflow_id']}/events", {
-                    "correlation_id": workflow["correlation_id"],
-                    "event_type": event_type,
-                    "source": source,
-                    "payload": {"symbol": request.symbol, "correlation_id": correlation_id},
-                })
+                await self._post(
+                    client,
+                    "workflow",
+                    f"/workflows/{workflow['workflow_id']}/events",
+                    {
+                        "correlation_id": workflow["correlation_id"],
+                        "event_type": event_type,
+                        "source": source,
+                        "payload": {
+                            "symbol": request.symbol,
+                            "correlation_id": correlation_id,
+                            "action": action,
+                        },
+                    },
+                )
             stages.append("workflow-events")
 
         return PipelineResult(
             correlation_id=correlation_id,
             symbol=request.symbol,
-            action=decision["action"],
+            action=action,
             confidence=Decimal(str(decision["confidence"])),
-            allocated_value=Decimal(str(decision["allowed_position_value"])),
+            allocated_value=allocated_value,
             risk_amount=Decimal(str(decision["risk_amount"])),
             stages_completed=stages,
             persisted_record_id=persisted_id,
+            simulation_fill=simulation_fill,
             audit_record_id=audit_id,
         )
