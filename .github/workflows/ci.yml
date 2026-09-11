@@ -17,11 +17,31 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install service dependencies
         run: |
-          pip install -r services/api-gateway/requirements.txt
+          python -m pip install --upgrade pip
+          for file in services/*/requirements.txt; do
+            echo "Installing $file"
+            pip install -r "$file"
+          done
 
-      - name: Check the app imports cleanly
+      - name: Compile Python sources
         run: |
-          cd services/api-gateway
-          python -c "from app.main import app; print('App imported OK')"
+          python -m compileall -q services
+
+      - name: Check core service imports
+        run: |
+          python -c "import sys; sys.path.insert(0, 'services/api-gateway'); from app.main import app; print('api-gateway OK')"
+          python -c "import sys; sys.path.insert(0, 'services/market-data'); from app.main import app; print('market-data OK')"
+          python -c "import sys; sys.path.insert(0, 'services/simulation-engine'); from app.main import app; print('simulation-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/portfolio-engine'); from app.main import app; print('portfolio-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/risk-engine'); from app.main import app; print('risk-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/strategy-engine'); from app.main import app; print('strategy-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/ai-core'); from app.main import app; print('ai-core OK')"
+          python -c "import sys; sys.path.insert(0, 'services/capital-allocation-engine'); from app.main import app; print('capital-allocation OK')"
+          python -c "import sys; sys.path.insert(0, 'services/intelligence-memory'); from app.main import app; print('intelligence-memory OK')"
+          python -c "import sys; sys.path.insert(0, 'services/research-intelligence'); from app.main import app; print('research-intelligence OK')"
+          python -c "import sys; sys.path.insert(0, 'services/orchestration-engine'); from app.main import app; print('orchestration-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/workflow-engine'); from app.main import app; print('workflow-engine OK')"
+          python -c "import sys; sys.path.insert(0, 'services/persistence-layer'); from app.main import app; print('persistence-layer OK')"
+          python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; print('integration-pipeline OK')"
