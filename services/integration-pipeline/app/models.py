@@ -20,6 +20,7 @@ class PipelineRequest(BaseModel):
     simulate: bool = True
     persist: bool = True
     account_id: str = Field(default="pipeline-demo", min_length=1)
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
 
 
@@ -38,4 +39,5 @@ class PipelineResult(BaseModel):
     allocation_decision: dict | None = None
     persisted_record_id: str | None = None
     simulation_fill: dict | None = None
+    portfolio_state: dict | None = None
     audit_record_id: str | None = None
