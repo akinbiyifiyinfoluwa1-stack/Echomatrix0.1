@@ -8,16 +8,25 @@ from app.engine import StrategyEngine
 from app.models import MarketSnapshot, StrategyConfig
 
 app = FastAPI(
-    title="Ecometrics Strategy Engine",
-    description="Baseline strategy and trade-proposal layer for the Ecometrics capital brain.",
+    title="EchoMatrix Strategy Engine",
+    description="Baseline strategy and trade-proposal layer for the EchoMatrix capital brain.",
     version="0.1.0",
 )
+
+
+def _evaluate(snapshot: MarketSnapshot):
+    config = StrategyConfig(
+        name="baseline-momentum",
+        momentum_threshold=Decimal("0.005"),
+        minimum_volume=Decimal("1"),
+    )
+    return StrategyEngine(config).evaluate(snapshot)
 
 
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
     return {
-        "service": "ecometrics-strategy-engine",
+        "service": "echomatrix-strategy-engine",
         "message": "Turn market observations into structured proposals.",
     }
 
@@ -27,13 +36,13 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "strategy-engine"}
 
 
+@app.post("/evaluate", tags=["strategy"])
+def evaluate(snapshot: MarketSnapshot) -> dict:
+    return _evaluate(snapshot).model_dump(mode="json")
+
+
 @app.get("/demo/proposal", tags=["demo"])
 def demo_proposal() -> dict:
-    config = StrategyConfig(
-        name="baseline-momentum",
-        momentum_threshold=Decimal("0.005"),
-        minimum_volume=Decimal("1"),
-    )
     snapshot = MarketSnapshot(
         symbol="BTC/USD",
         price=Decimal("101000"),
@@ -41,5 +50,4 @@ def demo_proposal() -> dict:
         volume=Decimal("12.5"),
         timestamp=datetime.now(timezone.utc),
     )
-    proposal = StrategyEngine(config).evaluate(snapshot)
-    return proposal.model_dump(mode="json")
+    return _evaluate(snapshot).model_dump(mode="json")
