@@ -1,6 +1,4 @@
-"""
-Ecometrics API Gateway - the first running service in the architecture.
-"""
+"""EchoMatrix API Gateway - the first running service in the architecture."""
 import logging
 import time
 
@@ -15,12 +13,12 @@ logging.basicConfig(
     level=settings.log_level.upper(),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-logger = logging.getLogger("ecometrics.api-gateway")
+logger = logging.getLogger("echomatrix.api-gateway")
 
 app = FastAPI(
-    title="Ecometrics API Gateway",
-    description="Entry point for the Ecometrics AI Financial and Wealth Operating System.",
-    version="0.1.0",
+    title="EchoMatrix API Gateway",
+    description="Entry point for the EchoMatrix AI Financial and Wealth Operating System.",
+    version="0.2.0",
 )
 
 START_TIME = time.time()
@@ -35,7 +33,7 @@ class HealthResponse(BaseModel):
 @app.get("/", tags=["meta"])
 def root():
     return {
-        "service": "ecometrics-api-gateway",
+        "service": "echomatrix-api-gateway",
         "message": "Build the brain first. Give the brain a body later.",
         "docs": "/docs",
     }
