@@ -25,6 +25,16 @@ class SimulatedOrder(BaseModel):
     timestamp: datetime
 
 
+class SimulationRequest(BaseModel):
+    account_id: str = Field(default="demo-001", min_length=1)
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
+    instrument_symbol: str = Field(min_length=1)
+    side: Side
+    quantity: Decimal = Field(gt=0)
+    market_price: Decimal = Field(gt=0)
+    fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
+
+
 class SimulatedFill(BaseModel):
     order: SimulatedOrder
     fill_price: Decimal = Field(gt=0)
