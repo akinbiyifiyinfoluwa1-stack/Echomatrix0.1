@@ -16,6 +16,8 @@ class RecordType(str, Enum):
     RESEARCH = "research"
     WORKFLOW = "workflow"
     AUDIT = "audit"
+    PORTFOLIO_STATE = "portfolio_state"
+    PIPELINE_RUN = "pipeline_run"
 
 
 class StoredRecord(BaseModel):
