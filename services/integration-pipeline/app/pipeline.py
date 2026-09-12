@@ -32,6 +32,7 @@ class EchoMatrixPipeline:
             "portfolio": os.getenv("PORTFOLIO_ENGINE_URL", "http://portfolio-engine:8000"),
             "workflow": os.getenv("WORKFLOW_ENGINE_URL", "http://workflow-engine:8000"),
             "persistence": os.getenv("PERSISTENCE_URL", "http://persistence-layer:8000"),
+            "memory": os.getenv("INTELLIGENCE_MEMORY_URL", "http://intelligence-memory:8000"),
         }
 
     async def _get(self, client: httpx.AsyncClient, service: str, path: str, params: dict | None = None) -> dict:
@@ -194,6 +195,41 @@ class EchoMatrixPipeline:
                 audit_id = stored["record_id"]
                 stages.append("persistence")
 
+            memory_payloads = [
+                {
+                    "memory_type": "observation",
+                    "title": f"Market observation: {request.symbol}",
+                    "content": f"Price={request.price}; previous_price={request.previous_price}; volume={request.volume}.",
+                    "confidence": str(request.research_confidence),
+                    "tags": ["market", "observation"],
+                },
+                {
+                    "memory_type": "decision",
+                    "title": f"Decision: {decision['action']} {request.symbol}",
+                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}.",
+                    "confidence": str(decision["confidence"]),
+                    "tags": ["decision", "risk", "allocation"],
+                },
+            ]
+            if simulation_fill:
+                memory_payloads.append({
+                    "memory_type": "outcome",
+                    "title": f"Simulated outcome: {request.symbol}",
+                    "content": f"Simulation fill recorded for {decision['action']} with quantity={quantity} at price={request.price}.",
+                    "confidence": str(decision["confidence"]),
+                    "tags": ["outcome", "simulation"],
+                })
+
+            for memory in memory_payloads:
+                await self._post(client, "memory", "/memories", {
+                    "memory_id": str(uuid4()),
+                    "symbol": request.symbol,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "integration-pipeline",
+                    **memory,
+                })
+            stages.append("intelligence-memory")
+
             events = [
                 ("market.update", "market-data"),
                 ("strategy.signal", "strategy"),
@@ -208,6 +244,7 @@ class EchoMatrixPipeline:
                 events.append(("outcome.recorded", "portfolio-engine"))
             else:
                 events.append(("outcome.recorded", "integration-pipeline"))
+            events.append(("memory.written", "intelligence-memory"))
 
             for event_type, source in events:
                 await self._post(client, "workflow", f"/workflows/{workflow['workflow_id']}/events", {
