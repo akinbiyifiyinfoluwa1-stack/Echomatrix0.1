@@ -4,7 +4,7 @@ import os
 import time
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,7 +21,7 @@ logger = logging.getLogger("echomatrix.api-gateway")
 app = FastAPI(
     title="EchoMatrix API Gateway",
     description="Public entry point for the EchoMatrix AI Financial and Wealth Operating System.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -78,6 +78,24 @@ def health():
         environment=settings.environment,
         uptime_seconds=round(time.time() - START_TIME, 2),
     )
+
+
+@app.get("/readiness", tags=["diagnostics"])
+async def readiness():
+    """Single public readiness check for the complete backend dependency graph."""
+    return await proxy("/readiness")
+
+
+@app.get("/pipeline/self-test", tags=["diagnostics"])
+async def pipeline_self_test(use_ai: bool = False):
+    """Run the bounded simulation-only backend smoke test through the gateway."""
+    return await proxy(f"/pipeline/self-test?use_ai={'true' if use_ai else 'false'}")
+
+
+@app.get("/pipeline/status", tags=["diagnostics"])
+async def pipeline_status():
+    """Read the last completed backend cycle without starting a new one."""
+    return await proxy("/pipeline/status")
 
 
 @app.get("/dashboard/overview", tags=["dashboard"])
