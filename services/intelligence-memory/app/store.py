@@ -1,8 +1,6 @@
-"""Small in-process memory store used as the first persistence contract.
+"""Memory store with an in-process cache and optional durable persistence mirror."""
+from __future__ import annotations
 
-The interface is intentionally storage-agnostic so PostgreSQL/vector storage can
-replace this implementation later without changing callers.
-"""
 from app.models import MemoryQuery, MemoryRecord
 
 
@@ -11,6 +9,7 @@ class MemoryStore:
         self._records: list[MemoryRecord] = []
 
     def write(self, record: MemoryRecord) -> MemoryRecord:
+        self._records = [item for item in self._records if item.memory_id != record.memory_id]
         self._records.append(record)
         return record
 
@@ -25,9 +24,7 @@ class MemoryStore:
 
         scored: list[tuple[int, MemoryRecord]] = []
         for record in candidates:
-            haystack = " ".join(
-                [record.title, record.content, record.symbol, *record.tags]
-            ).lower()
+            haystack = " ".join([record.title, record.content, record.symbol, *record.tags]).lower()
             score = sum(1 for term in terms if term in haystack)
             if score:
                 scored.append((score, record))
@@ -36,4 +33,9 @@ class MemoryStore:
         return [record for _, record in scored[: query.limit]]
 
     def all(self) -> list[MemoryRecord]:
-        return list(self._records)
+        return sorted(self._records, key=lambda item: item.created_at, reverse=True)
+
+    def load(self, records: list[MemoryRecord]) -> int:
+        for record in records:
+            self.write(record)
+        return len(records)
