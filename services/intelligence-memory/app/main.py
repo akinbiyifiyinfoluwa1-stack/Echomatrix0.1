@@ -1,8 +1,10 @@
-"""Intelligence memory API: the system's first explicit learning ledger."""
+"""Intelligence memory API: the system's explicit learning ledger."""
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
+import os
 
+import httpx
 from fastapi import FastAPI
 
 from app.models import MemoryQuery, MemoryRecord, MemoryType
@@ -11,28 +13,86 @@ from app.store import MemoryStore
 app = FastAPI(
     title="Ecometrics Intelligence Memory",
     description="Memory layer for observations, decisions, outcomes, research, and lessons.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 store = MemoryStore()
+PERSISTENCE_URL = os.getenv("PERSISTENCE_URL", "http://persistence-layer:8000").rstrip("/")
+
+
+def _persistence_payload(record: MemoryRecord) -> dict:
+    now = record.created_at.isoformat()
+    return {
+        "record_id": f"memory:{record.memory_id}",
+        "record_type": "memory",
+        "owner_id": "intelligence-memory",
+        "symbol": record.symbol,
+        "payload": record.model_dump(mode="json"),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def _persist(record: MemoryRecord) -> bool:
+    """Mirror memory to the SQL persistence service without making it a hard dependency."""
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.post(f"{PERSISTENCE_URL}/records", json=_persistence_payload(record))
+            response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+async def _hydrate() -> int:
+    """Restore durable memory into the fast in-process search cache."""
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.post(
+                f"{PERSISTENCE_URL}/records/query",
+                json={"record_type": "memory", "owner_id": "intelligence-memory", "limit": 1000},
+            )
+            response.raise_for_status()
+            rows = response.json()
+        records: list[MemoryRecord] = []
+        for row in rows:
+            payload = row.get("payload", {})
+            if not payload:
+                continue
+            try:
+                records.append(MemoryRecord.model_validate(payload))
+            except Exception:
+                continue
+        return store.load(records)
+    except Exception:
+        return 0
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    await _hydrate()
 
 
 @app.get("/", tags=["meta"])
-def root() -> dict[str, str]:
+def root() -> dict[str, str | int]:
     return {
         "service": "ecometrics-intelligence-memory",
         "message": "Remember what the brain observed, decided, and learned.",
+        "cached_records": len(store.all()),
+        "durable_backend": PERSISTENCE_URL,
     }
 
 
 @app.get("/health", tags=["meta"])
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "intelligence-memory"}
+def health() -> dict[str, str | int]:
+    return {"status": "ok", "service": "intelligence-memory", "records": len(store.all())}
 
 
 @app.post("/memories", response_model=MemoryRecord, tags=["memory"])
-def write_memory(record: MemoryRecord) -> MemoryRecord:
-    return store.write(record)
+async def write_memory(record: MemoryRecord) -> MemoryRecord:
+    store.write(record)
+    await _persist(record)
+    return record
 
 
 @app.post("/memories/search", response_model=list[MemoryRecord], tags=["memory"])
@@ -46,7 +106,7 @@ def list_memories() -> list[MemoryRecord]:
 
 
 @app.post("/demo/lesson", response_model=MemoryRecord, tags=["demo"])
-def demo_lesson() -> MemoryRecord:
+async def demo_lesson() -> MemoryRecord:
     record = MemoryRecord(
         memory_id=str(uuid4()),
         memory_type=MemoryType.LESSON,
@@ -58,4 +118,6 @@ def demo_lesson() -> MemoryRecord:
         created_at=datetime.now(timezone.utc),
         source="demo",
     )
-    return store.write(record)
+    store.write(record)
+    await _persist(record)
+    return record
