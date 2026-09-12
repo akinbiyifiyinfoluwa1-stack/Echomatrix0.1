@@ -1,8 +1,9 @@
 """EchoMatrix end-to-end intelligence pipeline API."""
 import os
+from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import PipelineRequest, PipelineResult
@@ -11,7 +12,7 @@ from app.pipeline import EchoMatrixPipeline
 app = FastAPI(
     title="EchoMatrix Integration Pipeline",
     description="End-to-end coordinator from market intelligence to persistent simulated decisions.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -48,6 +49,29 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "integration-pipeline"}
 
 
+@app.get("/readiness", tags=["meta"])
+async def readiness() -> dict:
+    """Check every backend dependency without mutating trading state."""
+    results: dict[str, dict] = {}
+    healthy = True
+
+    async with httpx.AsyncClient(timeout=8) as client:
+        for service, base_url in pipeline.services.items():
+            try:
+                response = await client.get(f"{base_url.rstrip('/')}/health")
+                response.raise_for_status()
+                results[service] = {"status": "ok"}
+            except Exception as exc:
+                healthy = False
+                results[service] = {"status": "error", "error": str(exc)}
+
+    return {
+        "status": "ready" if healthy else "degraded",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "services": results,
+    }
+
+
 @app.post("/pipeline/run", response_model=PipelineResult, tags=["pipeline"])
 async def run_pipeline(request: PipelineRequest) -> PipelineResult:
     global last_result
@@ -59,7 +83,8 @@ async def run_pipeline(request: PipelineRequest) -> PipelineResult:
 
 
 @app.get("/pipeline/demo", response_model=PipelineResult, tags=["demo"])
-async def demo_pipeline() -> PipelineResult:
+async def demo_pipeline(use_ai: bool = Query(default=True)) -> PipelineResult:
+    """Run the canonical backend demo cycle in simulation mode."""
     global last_result
     request = PipelineRequest(
         symbol="BTC/USD",
@@ -73,6 +98,8 @@ async def demo_pipeline() -> PipelineResult:
         daily_drawdown=0.01,
         research_confidence=0.80,
         ai_confidence=0.85,
+        use_ai=use_ai,
+        simulate=True,
         persist=True,
     )
     try:
@@ -80,6 +107,73 @@ async def demo_pipeline() -> PipelineResult:
         return last_result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"pipeline stage failed: {exc}") from exc
+
+
+@app.get("/pipeline/self-test", tags=["diagnostics"])
+async def pipeline_self_test(use_ai: bool = Query(default=False)) -> dict:
+    """Execute a bounded end-to-end backend smoke test.
+
+    This intentionally uses the simulated account and never submits broker or
+    exchange orders. By default AI is disabled so infrastructure can be tested
+    even when provider credentials are not configured.
+    """
+    global last_result
+    request = PipelineRequest(
+        symbol="BTC/USD",
+        price=101000,
+        previous_price=100000,
+        volume=12.5,
+        portfolio_equity=10000,
+        current_exposure=3000,
+        proposed_position_value=2000,
+        stop_distance=2000,
+        daily_drawdown=0.01,
+        research_confidence=0.80,
+        ai_confidence=0.85,
+        use_ai=use_ai,
+        simulate=True,
+        persist=True,
+        account_id="backend-self-test",
+    )
+
+    started_at = datetime.now(timezone.utc)
+    try:
+        result = await pipeline.run(request)
+        last_result = result
+        return {
+            "status": "passed",
+            "mode": "ai" if use_ai else "infrastructure",
+            "started_at": started_at.isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "correlation_id": result.correlation_id,
+            "stages_completed": result.stages_completed,
+            "stage_count": len(result.stages_completed),
+            "action": result.action,
+            "allocated_value": str(result.allocated_value),
+            "persisted_record_id": result.persisted_record_id,
+            "simulation_fill_created": result.simulation_fill is not None,
+            "real_money_execution": False,
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "mode": "ai" if use_ai else "infrastructure",
+            "started_at": started_at.isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "error": str(exc),
+            "real_money_execution": False,
+        }
+
+
+@app.get("/pipeline/status", tags=["diagnostics"])
+def pipeline_status() -> dict:
+    """Expose the last completed cycle without running another cycle."""
+    if last_result is None:
+        return {"status": "idle", "last_result": None}
+    return {
+        "status": "completed",
+        "last_result": last_result.model_dump(mode="json"),
+    }
 
 
 @app.get("/dashboard/overview", tags=["dashboard"])
@@ -120,4 +214,4 @@ async def dashboard_history(account_id: str = "pipeline-demo") -> list[dict]:
 
 @app.post("/dashboard/run-cycle", response_model=PipelineResult, tags=["dashboard"])
 async def dashboard_run_cycle() -> PipelineResult:
-    return await demo_pipeline()
+    return await demo_pipeline(use_ai=False)
