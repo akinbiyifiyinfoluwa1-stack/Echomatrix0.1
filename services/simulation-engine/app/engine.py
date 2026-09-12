@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from app.models import (
     Side,
-    SimulatedAccount,
+    SimulationAccount,
     SimulatedFill,
     SimulatedOrder,
     SimulatedPosition,
@@ -13,7 +13,7 @@ from app.models import (
 class SimulationEngine:
     """Execute simulated market orders against supplied prices."""
 
-    def __init__(self, account: SimulatedAccount) -> None:
+    def __init__(self, account: SimulationAccount) -> None:
         self.account = account
 
     def execute_market_order(
