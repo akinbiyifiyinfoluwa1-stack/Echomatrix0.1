@@ -2,12 +2,17 @@
 from fastapi import FastAPI
 
 from app.engine import ResearchEngine
-from app.models import ResearchFinding, ResearchRequest
+from app.models import (
+    MarketResearchContext,
+    MarketResearchRequest,
+    ResearchFinding,
+    ResearchRequest,
+)
 
 app = FastAPI(
-    title="Ecometrics Research Intelligence",
-    description="Structured research layer feeding AI Core and intelligence memory.",
-    version="0.1.0",
+    title="EchoMatrix Research Intelligence",
+    description="Structured research layer feeding Strategy, AI Core, and intelligence memory.",
+    version="0.2.0",
 )
 
 engine = ResearchEngine()
@@ -16,8 +21,9 @@ engine = ResearchEngine()
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
     return {
-        "service": "ecometrics-research-intelligence",
-        "message": "Turn external information into structured intelligence.",
+        "service": "echomatrix-research-intelligence",
+        "message": "Turn observations and external information into structured intelligence.",
+        "mode": "simulation-first",
     }
 
 
@@ -43,3 +49,9 @@ def build_finding(
         key_points=key_points or [],
         sources=[],
     )
+
+
+@app.post("/market-context", response_model=MarketResearchContext, tags=["market"])
+def market_context(request: MarketResearchRequest) -> MarketResearchContext:
+    """Normalize a market observation without claiming it is live external research."""
+    return engine.market_context(request)

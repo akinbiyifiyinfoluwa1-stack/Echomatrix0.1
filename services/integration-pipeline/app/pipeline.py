@@ -66,31 +66,32 @@ class EchoMatrixPipeline:
             })
             stages.append("portfolio-state")
 
-            strategy = await self._post(client, "strategy", "/evaluate", {
+            observation = {
                 "symbol": request.symbol,
                 "price": str(request.price),
                 "previous_price": str(request.previous_price),
                 "volume": str(request.volume),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            stages.append("strategy")
-
-            research_request = {
-                "query": f"{request.symbol} market conditions and trading risks",
-                "research_type": "market",
-                "symbol": request.symbol,
-                "max_sources": 5,
             }
-            research = await self._post(client, "research", "/prompt", research_request)
-            stages.append("research")
+            strategy = await self._post(client, "strategy", "/ensemble", observation)
+            stages.append("strategy-ensemble")
+
+            research = await self._post(client, "research", "/market-context", {
+                "symbol": request.symbol,
+                "price": str(request.price),
+                "previous_price": str(request.previous_price),
+                "volume": str(request.volume),
+                "source": "integration-pipeline-observation",
+            })
+            stages.append("research-context")
 
             if request.use_ai:
                 ai_analysis = await self._post(client, "ai", "/generate", {
                     "provider": "gemini",
                     "prompt": (
-                        f"Symbol={request.symbol}; price={request.price}; previous_price={request.previous_price}; "
-                        f"volume={request.volume}; strategy={strategy}; research={research['prompt']}. "
-                        "Analyze the evidence, state directional bias and confidence, and do not execute trades."
+                        f"Market observation={observation}; strategy ensemble={strategy}; "
+                        f"research context={research}. Analyze the evidence, identify uncertainty, "
+                        "state directional bias and confidence, and do not execute trades."
                     ),
                     "system_instruction": "You are EchoMatrix AI Core. Analyze evidence conservatively and never execute trades.",
                     "temperature": 0.2,
@@ -131,7 +132,7 @@ class EchoMatrixPipeline:
                 "proposed_position_value": str(allocation["allocated_capital"]),
                 "stop_distance": str(request.stop_distance),
                 "daily_drawdown": str(request.daily_drawdown),
-                "research_confidence": str(request.research_confidence),
+                "research_confidence": str(research["confidence"]),
                 "ai_confidence": str(request.ai_confidence),
             })
             stages.append("decision")
@@ -200,15 +201,15 @@ class EchoMatrixPipeline:
                     "memory_type": "observation",
                     "title": f"Market observation: {request.symbol}",
                     "content": f"Price={request.price}; previous_price={request.previous_price}; volume={request.volume}.",
-                    "confidence": str(request.research_confidence),
-                    "tags": ["market", "observation"],
+                    "confidence": str(research["confidence"]),
+                    "tags": ["market", "observation", "research"],
                 },
                 {
                     "memory_type": "decision",
                     "title": f"Decision: {decision['action']} {request.symbol}",
-                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}.",
+                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}; strategy={strategy['strategy']}.",
                     "confidence": str(decision["confidence"]),
-                    "tags": ["decision", "risk", "allocation"],
+                    "tags": ["decision", "strategy", "risk", "allocation"],
                 },
             ]
             if simulation_fill:
