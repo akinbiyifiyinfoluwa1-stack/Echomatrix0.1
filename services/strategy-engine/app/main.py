@@ -9,18 +9,26 @@ from app.models import MarketSnapshot, StrategyConfig
 
 app = FastAPI(
     title="EchoMatrix Strategy Engine",
-    description="Baseline strategy and trade-proposal layer for the EchoMatrix capital brain.",
-    version="0.1.0",
+    description="Baseline strategy and explainable ensemble layer for the EchoMatrix capital brain.",
+    version="0.2.0",
 )
 
 
-def _evaluate(snapshot: MarketSnapshot):
+def _engine() -> StrategyEngine:
     config = StrategyConfig(
         name="baseline-momentum",
         momentum_threshold=Decimal("0.005"),
         minimum_volume=Decimal("1"),
     )
-    return StrategyEngine(config).evaluate(snapshot)
+    return StrategyEngine(config)
+
+
+def _evaluate(snapshot: MarketSnapshot):
+    return _engine().evaluate(snapshot)
+
+
+def _ensemble(snapshot: MarketSnapshot):
+    return _engine().ensemble(snapshot)
 
 
 @app.get("/", tags=["meta"])
@@ -28,6 +36,7 @@ def root() -> dict[str, str]:
     return {
         "service": "echomatrix-strategy-engine",
         "message": "Turn market observations into structured proposals.",
+        "mode": "simulation-first",
     }
 
 
@@ -41,6 +50,11 @@ def evaluate(snapshot: MarketSnapshot) -> dict:
     return _evaluate(snapshot).model_dump(mode="json")
 
 
+@app.post("/ensemble", tags=["strategy"])
+def ensemble(snapshot: MarketSnapshot) -> dict:
+    return _ensemble(snapshot).model_dump(mode="json")
+
+
 @app.get("/demo/proposal", tags=["demo"])
 def demo_proposal() -> dict:
     snapshot = MarketSnapshot(
@@ -50,4 +64,4 @@ def demo_proposal() -> dict:
         volume=Decimal("12.5"),
         timestamp=datetime.now(timezone.utc),
     )
-    return _evaluate(snapshot).model_dump(mode="json")
+    return _ensemble(snapshot).model_dump(mode="json")
