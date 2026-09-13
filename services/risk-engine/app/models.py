@@ -1,4 +1,4 @@
-"""Risk-domain models used to evaluate capital before execution."""
+"""Risk-domain models used to evaluate capital before simulation."""
 from decimal import Decimal
 from enum import Enum
 
@@ -33,3 +33,7 @@ class RiskDecision(BaseModel):
     risk_amount: Decimal = Field(ge=0)
     portfolio_exposure_after: Decimal = Field(ge=0)
     reasons: list[str] = Field(default_factory=list)
+    risk_utilization: Decimal = Field(default=Decimal("0"), ge=0)
+    exposure_utilization_after: Decimal = Field(default=Decimal("0"), ge=0)
+    drawdown_utilization: Decimal = Field(default=Decimal("0"), ge=0)
+    risk_score: Decimal = Field(default=Decimal("0"), ge=0, le=1)
