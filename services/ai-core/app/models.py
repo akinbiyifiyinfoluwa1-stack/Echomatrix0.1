@@ -21,3 +21,19 @@ class AIResponse(BaseModel):
     model: str
     content: str
     fallback_used: bool = False
+
+
+class DecisionContextRequest(BaseModel):
+    observation: dict
+    strategy: dict
+    research: dict
+    risk: dict
+    memory: list[dict] = Field(default_factory=list)
+    provider: AIProvider = AIProvider.GEMINI
+    temperature: float = Field(default=0.2, ge=0, le=2)
+
+
+class DecisionContextResponse(BaseModel):
+    analysis: AIResponse
+    context_fields: list[str]
+    memory_items_used: int
