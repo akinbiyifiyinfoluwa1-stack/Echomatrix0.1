@@ -10,7 +10,7 @@ from app.models import CycleRequest
 app = FastAPI(
     title="EchoMatrix Core",
     description="Simulation-first intelligence runtime. No live execution.",
-    version="0.2.0",
+    version="0.3.0",
 )
 core = EchoMatrixCore()
 
@@ -26,6 +26,7 @@ def root() -> dict[str, str]:
         "service": "echomatrix-core",
         "message": "Build the brain first. Give the brain a body later.",
         "pipeline": "connected",
+        "market_data": "connected",
     }
 
 
@@ -46,24 +47,25 @@ def demo_cycle() -> dict:
     return core.run_cycle(request).model_dump(mode="json")
 
 
-@app.post("/end-to-end")
-async def end_to_end(request: CycleRequest) -> dict:
-    """Delegate one simulation cycle to the canonical multi-service brain.
-
-    The integration pipeline owns research, strategy, AI, risk, allocation,
-    simulation, portfolio, persistence, and memory. This endpoint makes the
-    core runtime the public brain entrypoint while keeping execution simulated.
-    """
+async def _run_pipeline(payload: dict) -> dict:
     pipeline_url = os.getenv(
         "INTEGRATION_PIPELINE_URL",
         "http://integration-pipeline:8000",
     ).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(f"{pipeline_url}/pipeline/run", json=payload)
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"end-to-end pipeline failed: {exc}") from exc
 
+
+def _pipeline_payload(request: CycleRequest) -> dict:
     price_change = abs((request.price - request.previous_price) / request.previous_price)
     proposed_position = request.simulated_cash * request.max_exposure
     stop_distance = request.price * max(price_change, 0.01)
-
-    payload = {
+    return {
         "symbol": request.symbol,
         "price": str(request.price),
         "previous_price": str(request.previous_price),
@@ -83,17 +85,46 @@ async def end_to_end(request: CycleRequest) -> dict:
         "fee_rate": "0.001",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(f"{pipeline_url}/pipeline/run", json=payload)
-            response.raise_for_status()
-            result = response.json()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"end-to-end pipeline failed: {exc}") from exc
 
+@app.post("/end-to-end")
+async def end_to_end(request: CycleRequest) -> dict:
+    """Delegate a supplied observation to the canonical multi-service brain."""
+    result = await _run_pipeline(_pipeline_payload(request))
     return {
         "service": "echomatrix-core",
         "mode": "simulation",
         "real_money_execution": False,
+        "cycle": result,
+    }
+
+
+@app.post("/data-driven-cycle")
+async def data_driven_cycle() -> dict:
+    """Fetch the latest normalized market observation before running the brain."""
+    market_url = os.getenv(
+        "MARKET_DATA_URL",
+        "http://market-data:8000",
+    ).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(f"{market_url}/demo/candle")
+            response.raise_for_status()
+            candle = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"market-data fetch failed: {exc}") from exc
+
+    request = CycleRequest(
+        symbol=candle["instrument"]["symbol"],
+        price=candle["close"],
+        previous_price=candle["open"],
+        volume=candle.get("volume") or "0",
+    )
+    result = await _run_pipeline(_pipeline_payload(request))
+    return {
+        "service": "echomatrix-core",
+        "mode": "simulation",
+        "real_money_execution": False,
+        "source": "market-data",
+        "observation": candle,
         "cycle": result,
     }
