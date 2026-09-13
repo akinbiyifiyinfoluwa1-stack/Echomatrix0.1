@@ -7,13 +7,13 @@ import os
 import httpx
 from fastapi import FastAPI
 
-from app.models import MemoryQuery, MemoryRecord, MemoryType
+from app.models import LearningRequest, LearningResult, MemoryQuery, MemoryRecord, MemoryType
 from app.store import MemoryStore
 
 app = FastAPI(
-    title="Ecometrics Intelligence Memory",
+    title="EchoMatrix Intelligence Memory",
     description="Memory layer for observations, decisions, outcomes, research, and lessons.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 store = MemoryStore()
@@ -68,6 +68,16 @@ async def _hydrate() -> int:
         return 0
 
 
+def _learning_adjustment(request: LearningRequest) -> str:
+    if request.simulated_return > 0 and request.risk_score <= Decimal("0.50"):
+        return "retain-context"
+    if request.simulated_return > 0 and request.risk_score > Decimal("0.50"):
+        return "retain-result-reduce-risk"
+    if request.simulated_return <= 0 and request.risk_score > Decimal("0.50"):
+        return "reduce-risk-and-require-more-confirmation"
+    return "review-context-before-repeating"
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await _hydrate()
@@ -76,7 +86,7 @@ async def startup() -> None:
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str | int]:
     return {
-        "service": "ecometrics-intelligence-memory",
+        "service": "echomatrix-intelligence-memory",
         "message": "Remember what the brain observed, decided, and learned.",
         "cached_records": len(store.all()),
         "durable_backend": PERSISTENCE_URL,
@@ -103,6 +113,29 @@ def search_memory(query: MemoryQuery) -> list[MemoryRecord]:
 @app.get("/memories", response_model=list[MemoryRecord], tags=["memory"])
 def list_memories() -> list[MemoryRecord]:
     return store.all()
+
+
+@app.post("/learn", response_model=LearningResult, tags=["learning"])
+async def learn(request: LearningRequest) -> LearningResult:
+    adjustment = _learning_adjustment(request)
+    lesson = MemoryRecord(
+        memory_id=str(uuid4()),
+        memory_type=MemoryType.LESSON,
+        symbol=request.symbol,
+        title=f"Learning lesson: {request.strategy}",
+        content=(
+            f"Action={request.action}; simulated_return={request.simulated_return}; "
+            f"risk_score={request.risk_score}; confidence={request.confidence}; "
+            f"context={request.context or 'none'}. Adjustment={adjustment}."
+        ),
+        confidence=request.confidence,
+        tags=["lesson", "learning-loop", request.strategy, adjustment],
+        created_at=datetime.now(timezone.utc),
+        source="intelligence-memory-learning-loop",
+    )
+    store.write(lesson)
+    await _persist(lesson)
+    return LearningResult(lesson=lesson, adjustment=adjustment)
 
 
 @app.post("/demo/lesson", response_model=MemoryRecord, tags=["demo"])
