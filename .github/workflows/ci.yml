@@ -45,3 +45,8 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'services/workflow-engine'); from app.main import app; print('workflow-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/persistence-layer'); from app.main import app; print('persistence-layer OK')"
           python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; print('integration-pipeline OK')"
+          python -c "import sys; sys.path.insert(0, 'services/echomatrix-core'); from app.main import app; print('echomatrix-core OK')"
+
+      - name: Run EchoMatrix core tests
+        run: |
+          PYTHONPATH=services/echomatrix-core python -m pytest services/echomatrix-core/tests -q
