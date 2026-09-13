@@ -32,7 +32,7 @@ def root() -> dict[str, str]:
 
 @app.get("/health", tags=["meta"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "ai-core"}
+    return {"status": "ok", "service": "ai-core", "mode": "simulation"}
 
 
 @app.post("/generate", response_model=AIResponse, tags=["ai"])
