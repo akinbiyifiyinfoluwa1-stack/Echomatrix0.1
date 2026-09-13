@@ -34,3 +34,22 @@ class TradeProposal(BaseModel):
     reference_price: Decimal = Field(gt=0)
     rationale: list[str] = Field(default_factory=list)
     timestamp: datetime
+
+
+class StrategyComponent(BaseModel):
+    name: str
+    signal: Signal
+    score: Decimal = Field(ge=-1, le=1)
+    confidence: Decimal = Field(ge=0, le=1)
+    rationale: str
+
+
+class StrategyEnsembleResult(BaseModel):
+    symbol: str
+    signal: Signal
+    confidence: Decimal = Field(ge=0, le=1)
+    composite_score: Decimal = Field(ge=-1, le=1)
+    regime: str
+    components: list[StrategyComponent] = Field(default_factory=list)
+    proposal: TradeProposal
+    timestamp: datetime
