@@ -1,22 +1,22 @@
-"""Market Data service: the first sensory layer of the Ecometrics brain."""
+"""Market Data service: the first sensory layer of the EchoMatrix brain."""
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import FastAPI
 
-from app.models import AssetClass, Candle, Instrument
+from app.models import AssetClass, Candle, Instrument, MarketTick
 
 app = FastAPI(
-    title="Ecometrics Market Data",
-    description="Canonical market-data layer for the Ecometrics Financial & Wealth OS.",
-    version="0.1.0",
+    title="EchoMatrix Market Data",
+    description="Canonical market-data layer for the EchoMatrix Financial & Wealth OS.",
+    version="0.2.0",
 )
 
 
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
     return {
-        "service": "ecometrics-market-data",
+        "service": "echomatrix-market-data",
         "message": "The brain needs senses before it needs a body.",
     }
 
@@ -26,7 +26,6 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "market-data"}
 
 
-@app.get("/demo/instrument", response_model=Instrument, tags=["demo"])
 def demo_instrument() -> Instrument:
     return Instrument(
         symbol="BTC/USD",
@@ -36,6 +35,11 @@ def demo_instrument() -> Instrument:
         quote_currency="USD",
         exchange="demo",
     )
+
+
+@app.get("/demo/instrument", response_model=Instrument, tags=["demo"])
+def instrument() -> Instrument:
+    return demo_instrument()
 
 
 @app.get("/demo/candle", response_model=Candle, tags=["demo"])
@@ -49,4 +53,18 @@ def demo_candle() -> Candle:
         low=Decimal("99800"),
         close=Decimal("100150"),
         volume=Decimal("12.5"),
+    )
+
+
+@app.get("/demo/snapshot", response_model=MarketTick, tags=["demo"])
+def demo_snapshot() -> MarketTick:
+    """Return a normalized latest-price observation for downstream services."""
+    candle = demo_candle()
+    return MarketTick(
+        instrument=candle.instrument,
+        timestamp=candle.timestamp,
+        bid=candle.close - Decimal("5"),
+        ask=candle.close + Decimal("5"),
+        last=candle.close,
+        volume=candle.volume,
     )
