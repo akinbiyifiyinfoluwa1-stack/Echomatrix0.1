@@ -1,4 +1,4 @@
-"""Persistent intelligence-memory contracts for observations, decisions, and outcomes."""
+"""Persistent intelligence-memory contracts for observations, decisions, outcomes, and lessons."""
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -31,3 +31,18 @@ class MemoryQuery(BaseModel):
     symbol: str = ""
     memory_type: MemoryType | None = None
     limit: int = Field(default=10, ge=1, le=100)
+
+
+class LearningRequest(BaseModel):
+    symbol: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    strategy: str = Field(default="unknown", min_length=1)
+    simulated_return: Decimal
+    risk_score: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    confidence: Decimal = Field(default=Decimal("0.5"), ge=0, le=1)
+    context: str = ""
+
+
+class LearningResult(BaseModel):
+    lesson: MemoryRecord
+    adjustment: str
