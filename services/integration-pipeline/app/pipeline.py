@@ -1,8 +1,7 @@
 """HTTP coordinator connecting EchoMatrix services end-to-end.
 
-The pipeline calls the real domain service contracts in sequence. It is
-simulation-first: approved decisions may produce paper fills, but no broker
-or exchange receives an order.
+The pipeline calls the domain services in sequence. It is simulation-first:
+approved decisions may produce paper fills, but no broker or exchange receives an order.
 """
 import os
 from datetime import datetime, timezone
@@ -52,6 +51,8 @@ class EchoMatrixPipeline:
         portfolio_state = None
         research = None
         ai_analysis = None
+        memory_context: list[dict] = []
+        learning_result = None
 
         async with httpx.AsyncClient(timeout=30) as client:
             await self._get(client, "market-data", "/health")
@@ -73,6 +74,7 @@ class EchoMatrixPipeline:
                 "volume": str(request.volume),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
             strategy = await self._post(client, "strategy", "/ensemble", observation)
             stages.append("strategy-ensemble")
 
@@ -85,15 +87,29 @@ class EchoMatrixPipeline:
             })
             stages.append("research-context")
 
+            # Retrieve relevant prior lessons before asking AI to reason.
+            try:
+                memory_context = await self._post(client, "memory", "/memories/search", {
+                    "query": f"{request.symbol} {strategy.get('strategy', 'strategy')} risk lesson outcome",
+                    "symbol": request.symbol,
+                    "limit": 8,
+                })
+            except httpx.HTTPError:
+                memory_context = []
+            stages.append("memory-recall")
+
             if request.use_ai:
-                ai_analysis = await self._post(client, "ai", "/generate", {
+                ai_analysis = await self._post(client, "ai", "/analyze-context", {
                     "provider": "gemini",
-                    "prompt": (
-                        f"Market observation={observation}; strategy ensemble={strategy}; "
-                        f"research context={research}. Analyze the evidence, identify uncertainty, "
-                        "state directional bias and confidence, and do not execute trades."
-                    ),
-                    "system_instruction": "You are EchoMatrix AI Core. Analyze evidence conservatively and never execute trades.",
+                    "observation": observation,
+                    "strategy": strategy,
+                    "research": research,
+                    "risk": {
+                        "requested_position_value": str(request.proposed_position_value),
+                        "daily_drawdown": str(request.daily_drawdown),
+                        "stop_distance": str(request.stop_distance),
+                    },
+                    "memory": memory_context,
                     "temperature": 0.2,
                 })
             else:
@@ -110,6 +126,7 @@ class EchoMatrixPipeline:
             })
             stages.append("risk")
 
+            # AI receives risk before final orchestration; the risk engine remains authoritative.
             allocation = await self._post(client, "allocation", "/allocate", {
                 "available_capital": str(request.portfolio_equity),
                 "proposed_position_value": str(request.proposed_position_value),
@@ -189,6 +206,7 @@ class EchoMatrixPipeline:
                         "decision": decision,
                         "simulation_fill": simulation_fill,
                         "portfolio_state": portfolio_state,
+                        "memory_context": memory_context,
                     },
                     "created_at": now,
                     "updated_at": now,
@@ -205,9 +223,16 @@ class EchoMatrixPipeline:
                     "tags": ["market", "observation", "research"],
                 },
                 {
+                    "memory_type": "research",
+                    "title": f"Research context: {request.symbol}",
+                    "content": research.get("summary", "Research context recorded."),
+                    "confidence": str(research["confidence"]),
+                    "tags": ["research", "context"],
+                },
+                {
                     "memory_type": "decision",
                     "title": f"Decision: {decision['action']} {request.symbol}",
-                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}; strategy={strategy['strategy']}.",
+                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}; strategy={strategy.get('strategy', 'unknown')}.",
                     "confidence": str(decision["confidence"]),
                     "tags": ["decision", "strategy", "risk", "allocation"],
                 },
@@ -231,10 +256,28 @@ class EchoMatrixPipeline:
                 })
             stages.append("intelligence-memory")
 
+            # Turn the current simulated result into an explicit lesson for the next cycle.
+            simulated_return = Decimal("0")
+            if simulation_fill:
+                fill_price = Decimal(str(simulation_fill.get("fill_price", request.price)))
+                simulated_return = (request.price - fill_price) / fill_price if fill_price else Decimal("0")
+            risk_score = Decimal(str(risk.get("risk_score", "0")))
+            learning_result = await self._post(client, "memory", "/learn", {
+                "symbol": request.symbol,
+                "action": decision["action"],
+                "strategy": strategy.get("strategy", "unknown"),
+                "simulated_return": str(simulated_return),
+                "risk_score": str(risk_score),
+                "confidence": str(decision["confidence"]),
+                "context": f"risk={risk.get('status')}; memory_recall={len(memory_context)}; correlation={correlation_id}",
+            })
+            stages.append("learning-loop")
+
             events = [
                 ("market.update", "market-data"),
                 ("strategy.signal", "strategy"),
                 ("research.ready", "research"),
+                ("memory.recalled", "intelligence-memory"),
                 ("ai.analysis", "ai-core"),
                 ("risk.decision", "risk"),
                 ("capital.allocation", "capital-allocation"),
@@ -245,7 +288,10 @@ class EchoMatrixPipeline:
                 events.append(("outcome.recorded", "portfolio-engine"))
             else:
                 events.append(("outcome.recorded", "integration-pipeline"))
-            events.append(("memory.written", "intelligence-memory"))
+            events.extend([
+                ("memory.written", "intelligence-memory"),
+                ("learning.updated", "intelligence-memory"),
+            ])
 
             for event_type, source in events:
                 await self._post(client, "workflow", f"/workflows/{workflow['workflow_id']}/events", {
