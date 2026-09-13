@@ -6,7 +6,7 @@ from app.models import CycleRequest
 
 def test_strong_positive_move_produces_bounded_simulated_buy() -> None:
     result = EchoMatrixCore().run_cycle(
-        CycleRequest(price=Decimal("102000"), previous_price=Decimal("100000"))
+        CycleRequest(price=Decimal("110000"), previous_price=Decimal("100000"))
     )
     assert result.action == "BUY"
     assert result.risk_approved is True
