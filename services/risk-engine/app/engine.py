@@ -10,6 +10,21 @@ class RiskEngine:
     def __init__(self, limits: RiskLimits) -> None:
         self.limits = limits
 
+    def _metrics(self, request: RiskRequest, allowed: Decimal, implied_risk: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        max_trade_risk = request.portfolio_equity * self.limits.max_risk_per_trade
+        exposure_after = request.current_exposure + allowed
+        risk_utilization = implied_risk / max_trade_risk if max_trade_risk > 0 else Decimal("1")
+        exposure_utilization = exposure_after / self.limits.max_portfolio_exposure
+        drawdown_utilization = request.daily_drawdown / self.limits.max_drawdown
+        risk_score = max(
+            Decimal("0"),
+            min(
+                Decimal("1"),
+                max(risk_utilization, exposure_utilization, drawdown_utilization),
+            ),
+        )
+        return risk_utilization, exposure_utilization, drawdown_utilization, risk_score
+
     def evaluate(self, request: RiskRequest) -> RiskDecision:
         reasons: list[str] = []
         proposed = request.proposed_position_value
@@ -36,21 +51,31 @@ class RiskEngine:
             reasons.append("proposed position exceeds max risk per trade")
 
         if request.daily_drawdown >= self.limits.max_drawdown:
+            metrics = self._metrics(request, Decimal("0"), Decimal("0"))
             return RiskDecision(
                 status=RiskStatus.BLOCKED,
                 allowed_position_value=Decimal("0"),
                 risk_amount=Decimal("0"),
                 portfolio_exposure_after=request.current_exposure,
                 reasons=["daily drawdown limit reached", *reasons],
+                risk_utilization=metrics[0],
+                exposure_utilization_after=metrics[1],
+                drawdown_utilization=metrics[2],
+                risk_score=metrics[3],
             )
 
         if allowed <= 0:
+            metrics = self._metrics(request, Decimal("0"), Decimal("0"))
             return RiskDecision(
                 status=RiskStatus.BLOCKED,
                 allowed_position_value=Decimal("0"),
                 risk_amount=Decimal("0"),
                 portfolio_exposure_after=request.current_exposure,
                 reasons=reasons or ["no capital remains within risk limits"],
+                risk_utilization=metrics[0],
+                exposure_utilization_after=metrics[1],
+                drawdown_utilization=metrics[2],
+                risk_score=metrics[3],
             )
 
         final_risk = allowed * stop_fraction
@@ -58,10 +83,15 @@ class RiskEngine:
         if status == RiskStatus.APPROVED:
             reasons.append("position is within configured risk limits")
 
+        metrics = self._metrics(request, allowed, final_risk)
         return RiskDecision(
             status=status,
             allowed_position_value=allowed,
             risk_amount=final_risk,
             portfolio_exposure_after=request.current_exposure + allowed,
             reasons=reasons,
+            risk_utilization=metrics[0],
+            exposure_utilization_after=metrics[1],
+            drawdown_utilization=metrics[2],
+            risk_score=metrics[3],
         )
