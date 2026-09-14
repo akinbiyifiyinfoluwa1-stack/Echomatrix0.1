@@ -1,4 +1,8 @@
-"""Minimal Gemini/Groq provider adapters using HTTP APIs."""
+"""Provider-neutral AI adapters using HTTP APIs.
+
+EchoMatrix can use Gemini, Groq, or DeepSeek for analysis. These providers
+only receive analytical context; they have no execution capability.
+"""
 from typing import Any
 
 import httpx
@@ -11,16 +15,19 @@ class AIProviderError(RuntimeError):
 
 
 class AIClient:
-    """Route requests to exactly the configured Gemini or Groq provider."""
+    """Route requests to a configured Gemini, Groq, or DeepSeek provider."""
 
-    def __init__(self, gemini_api_key: str = "", groq_api_key: str = "") -> None:
+    def __init__(self, gemini_api_key: str = "", groq_api_key: str = "", deepseek_api_key: str = "") -> None:
         self.gemini_api_key = gemini_api_key
         self.groq_api_key = groq_api_key
+        self.deepseek_api_key = deepseek_api_key
 
     async def generate(self, request: AIRequest) -> AIResponse:
         if request.provider == AIProvider.GEMINI:
             return await self._gemini(request)
-        return await self._groq(request)
+        if request.provider == AIProvider.GROQ:
+            return await self._groq(request)
+        return await self._deepseek(request)
 
     async def _gemini(self, request: AIRequest) -> AIResponse:
         if not self.gemini_api_key:
@@ -70,3 +77,31 @@ class AIClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise AIProviderError("Groq returned an unexpected response") from exc
         return AIResponse(provider=AIProvider.GROQ, model=model, content=content)
+
+    async def _deepseek(self, request: AIRequest) -> AIResponse:
+        if not self.deepseek_api_key:
+            raise AIProviderError("DEEPSEEK_API_KEY is not configured")
+        model = "deepseek-v4-flash"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": request.system_instruction},
+                {"role": "user", "content": request.prompt},
+            ],
+            "temperature": request.temperature,
+        }
+        headers = {"Authorization": f"Bearer {self.deepseek_api_key}"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://api.deepseek.com/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+        if response.is_error:
+            raise AIProviderError(f"DeepSeek request failed: HTTP {response.status_code}")
+        data = response.json()
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise AIProviderError("DeepSeek returned an unexpected response") from exc
+        return AIResponse(provider=AIProvider.DEEPSEEK, model=model, content=content)
