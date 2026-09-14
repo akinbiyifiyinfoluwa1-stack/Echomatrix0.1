@@ -17,8 +17,9 @@ from app.advanced import (
     DurableMemory, ExternalIntelligence, SystemEvaluator, Hardening, AutonomousSimulation,
     StrategyCandidate,
 )
+from app.validation import temporal_split, walk_forward_windows, leakage_report, summarize_oos
 
-app = FastAPI(title="EchoMatrix Brain Runtime", version="2.0.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
+app = FastAPI(title="EchoMatrix Brain Runtime", version="2.1.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
 memory = LearningMemory(); durable = DurableMemory(); autonomous = AutonomousSimulation()
 last_cycle: dict | None = None
 
@@ -30,7 +31,7 @@ async def fetch_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
     return data.get("candles", data) if isinstance(data, dict) else data
 
 @app.get("/", tags=["meta"])
-def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":10}
+def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":12}
 
 @app.get("/health", tags=["meta"])
 def health(): return {"status":"ok","service":"brain-runtime","execution":False}
@@ -50,7 +51,6 @@ async def cycle(request: BrainCycleRequest):
     context={"observation":features,"research":research,"strategy":strategy,"memory":memory.recall(features["regime"],"trend")}
     council=await run_council(context, request.use_ai)
     risk=risk_snapshot(features,strategy); allocation=allocation_snapshot(strategy,risk)
-    # Current-cycle fill is marked against the next observation when available by the full replay endpoint.
     sim=simulate_decision(float(features["last_price"]), allocation["status"], allocation["allocated_value"], float(features["last_price"]))
     learning=memory.record(features["regime"],"trend",council.get("consensus","none"),sim["simulated_pnl"])
     durable_hash=durable.write({"kind":"brain-cycle","symbol":request.symbol,"timeframe":request.timeframe,"features":features,"research":research,"strategy":strategy,"simulation":sim})
@@ -67,8 +67,7 @@ def replay(request: ReplayRequest):
     return result
 
 @app.post("/brain/full-replay", tags=["advanced"])
-def full_replay(request: ReplayRequest):
-    return full_brain_replay(request.candles, float(request.initial_cash), float(request.fee_rate))
+def full_replay(request: ReplayRequest): return full_brain_replay(request.candles, float(request.initial_cash), float(request.fee_rate))
 
 @app.post("/brain/evolve", tags=["advanced"])
 def evolve(payload: dict):
@@ -97,5 +96,23 @@ def hardening(): return Hardening.run(dict(os.environ))
 @app.post("/brain/autonomous-simulation", tags=["advanced"])
 def autonomous_simulation(request: ReplayRequest): return autonomous.run(request.candles, 1)
 
+@app.post("/brain/validation", tags=["validation"])
+def validation(payload: dict):
+    from app.models import Candle
+    candles = [Candle(**item) for item in payload.get("candles", [])]
+    report = __import__("app.validation", fromlist=["validate_candles"]).validate_candles(candles)
+    train, test = temporal_split(candles, float(payload.get("train_fraction", .70))) if len(candles) >= 2 else (candles, [])
+    return {**report.as_dict(), "train_count": len(train), "test_count": len(test), "leakage": leakage_report(train, test), "simulation_only": True}
+
+@app.post("/brain/walk-forward", tags=["validation"])
+def walk_forward(payload: dict):
+    from app.models import Candle
+    candles = [Candle(**item) for item in payload.get("candles", [])]
+    windows = walk_forward_windows(candles, int(payload.get("train_size", 100)), int(payload.get("test_size", 20)), payload.get("step"))
+    return {"windows": windows, "window_count": len(windows), "simulation_only": True}
+
+@app.post("/brain/oos-summary", tags=["validation"])
+def oos_summary(payload: dict): return summarize_oos(payload.get("results", []))
+
 @app.get("/brain/status", tags=["diagnostics"])
-def status(): return {"status":"ready","last_cycle":last_cycle,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":10}
+def status(): return {"status":"ready","last_cycle":last_cycle,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":12,"validation_layer":True}
