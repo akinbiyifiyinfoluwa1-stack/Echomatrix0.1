@@ -6,21 +6,44 @@ from decimal import Decimal
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from app.models import PipelineRequest, PipelineResult, ReplayRequest
 from app.pipeline import EchoMatrixPipeline
 from app.replay import replay_market_series
+from app.walk_forward import walk_forward_replay
+from app.experiments import ExperimentSpec, run_experiment_registry
 
 app = FastAPI(
     title="EchoMatrix Integration Pipeline",
     description="End-to-end coordinator from market intelligence to persistent simulated decisions.",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 pipeline = EchoMatrixPipeline()
 last_result: PipelineResult | None = None
 last_replay: dict | None = None
+last_research: dict | None = None
+
+
+class WalkForwardRequest(BaseModel):
+    symbol: str = Field(default="BTC/USD", min_length=1)
+    prices: list[Decimal] = Field(min_length=4)
+    train_size: int = Field(default=5, ge=2)
+    test_size: int = Field(default=3, ge=2)
+    step: int | None = Field(default=None, ge=1)
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
+    fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
+    allocation_fraction: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
+
+
+class ExperimentRequest(BaseModel):
+    symbol: str = Field(default="BTC/USD", min_length=1)
+    prices: list[Decimal] = Field(min_length=2)
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
+    fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
+    experiments: list[dict] = Field(min_length=1)
 
 
 async def portfolio_get(path: str, params: dict | None = None) -> dict | list:
@@ -33,7 +56,7 @@ async def portfolio_get(path: str, params: dict | None = None) -> dict | list:
 
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
-    return {"service": "echomatrix-integration-pipeline", "mode": "simulation-first", "message": "Connect the brain end-to-end before giving it a real-money body.", "multi_cycle_replay": "enabled"}
+    return {"service": "echomatrix-integration-pipeline", "mode": "simulation-first", "message": "Connect the brain end-to-end before giving it a real-money body.", "multi_cycle_replay": "enabled", "research": "walk-forward-and-experiments"}
 
 
 @app.get("/health", tags=["meta"])
@@ -77,6 +100,35 @@ async def replay_pipeline(request: ReplayRequest) -> dict:
         return last_replay
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/research/walk-forward", tags=["research"])
+async def walk_forward(request: WalkForwardRequest) -> dict:
+    """Run rolling out-of-sample simulation windows; no external execution."""
+    global last_research
+    try:
+        last_research = walk_forward_replay(request.prices, request.train_size, request.test_size, request.step, request.initial_cash, request.fee_rate, request.allocation_fraction)
+        last_research["symbol"] = request.symbol
+        return last_research
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/research/experiments", tags=["research"])
+async def experiments(request: ExperimentRequest) -> dict:
+    """Compare several deterministic simulation policies on the same price series."""
+    try:
+        specs = [ExperimentSpec(name=str(item["name"]), allocation_fraction=Decimal(str(item["allocation_fraction"])), threshold=Decimal(str(item["threshold"]))) for item in request.experiments]
+        result = run_experiment_registry(request.prices, specs, request.initial_cash, request.fee_rate)
+        result["symbol"] = request.symbol
+        return result
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid experiment: {exc}") from exc
+
+
+@app.get("/research/status", tags=["diagnostics"])
+def research_status() -> dict:
+    return {"status": "completed" if last_research else "idle", "last_research": last_research}
 
 
 @app.get("/pipeline/replay/demo", tags=["simulation"])
@@ -125,7 +177,7 @@ async def dashboard_overview(account_id: str = "pipeline-demo") -> dict:
         account = await portfolio_get(f"/accounts/{account_id}", {"initial_cash": "10000"})
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"portfolio service unavailable: {exc}") from exc
-    return {"mode": "simulation", "account": account, "latest_cycle": last_result.model_dump(mode="json") if last_result else None, "latest_replay": last_replay, "ai_confidence": str(last_result.confidence) if last_result else None, "stages": last_result.stages_completed if last_result else []}
+    return {"mode": "simulation", "account": account, "latest_cycle": last_result.model_dump(mode="json") if last_result else None, "latest_replay": last_replay, "latest_research": last_research, "ai_confidence": str(last_result.confidence) if last_result else None, "stages": last_result.stages_completed if last_result else []}
 
 
 @app.get("/dashboard/positions", tags=["dashboard"])
