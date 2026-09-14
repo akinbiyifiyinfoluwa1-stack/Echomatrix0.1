@@ -2,22 +2,22 @@
 import os
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from app.engine import EchoMatrixCore
 from app.models import CycleRequest
 
 app = FastAPI(
     title="EchoMatrix Core",
-    description="Simulation-first intelligence runtime. No live execution.",
-    version="0.4.0",
+    description="Simulation-first intelligence runtime using real market observations.",
+    version="0.5.0",
 )
 core = EchoMatrixCore()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "echomatrix-core", "mode": "simulation", "brain_loop": "connected"}
+    return {"status": "ok", "service": "echomatrix-core", "mode": "real-data-simulation", "brain_loop": "connected"}
 
 
 @app.get("/")
@@ -26,7 +26,7 @@ def root() -> dict[str, str]:
         "service": "echomatrix-core",
         "message": "Build the brain first. Give the brain a body later.",
         "pipeline": "connected",
-        "market_data": "connected",
+        "market_data": "real-read-only",
         "brain_loop": "market→research→strategy→ai→risk→allocation→simulation→memory→learning",
         "real_money_execution": "false",
     }
@@ -82,38 +82,51 @@ def _pipeline_payload(request: CycleRequest) -> dict:
 @app.post("/end-to-end")
 async def end_to_end(request: CycleRequest) -> dict:
     result = await _run_pipeline(_pipeline_payload(request))
-    return {"service": "echomatrix-core", "mode": "simulation", "real_money_execution": False, "cycle": result}
+    return {"service": "echomatrix-core", "mode": "real-data-simulation", "real_money_execution": False, "cycle": result}
 
 
-@app.post("/data-driven-cycle")
-async def data_driven_cycle() -> dict:
+async def _fetch_real_candle(symbol: str, timeframe: str) -> dict:
     market_url = os.getenv("MARKET_DATA_URL", "http://market-data:8000").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(f"{market_url}/demo/candle")
+            response = await client.get(f"{market_url}/market/candles", params={"symbol": symbol, "timeframe": timeframe, "limit": 2})
             response.raise_for_status()
-            candle = response.json()
+            return response.json()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"market-data fetch failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"real market-data fetch failed: {exc}") from exc
 
+
+@app.post("/data-driven-cycle")
+async def data_driven_cycle(
+    symbol: str = Query(default="BTC/USD"),
+    timeframe: str = Query(default="1m"),
+) -> dict:
+    market = await _fetch_real_candle(symbol, timeframe)
+    candles = market["candles"]
+    previous, latest = candles[-2], candles[-1]
     request = CycleRequest(
-        symbol=candle["instrument"]["symbol"],
-        price=candle["close"],
-        previous_price=candle["open"],
-        volume=candle.get("volume") or "0",
+        symbol=market["symbol"],
+        price=latest["close"],
+        previous_price=previous["close"],
+        volume=latest.get("volume") or "0",
     )
     result = await _run_pipeline(_pipeline_payload(request))
     return {
         "service": "echomatrix-core",
-        "mode": "simulation",
+        "mode": "real-data-simulation",
         "real_money_execution": False,
-        "source": "market-data",
-        "observation": candle,
+        "source": market["source"],
+        "timeframe": timeframe,
+        "observation": latest,
+        "previous_observation": previous,
         "cycle": result,
     }
 
 
 @app.post("/brain-cycle")
-async def brain_cycle() -> dict:
-    """Run one complete sensory-to-learning simulation cycle."""
-    return await data_driven_cycle()
+async def brain_cycle(
+    symbol: str = Query(default="BTC/USD"),
+    timeframe: str = Query(default="1m"),
+) -> dict:
+    """Run the brain on actual market observations with simulated capital."""
+    return await data_driven_cycle(symbol, timeframe)

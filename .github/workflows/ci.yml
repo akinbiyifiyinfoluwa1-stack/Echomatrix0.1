@@ -44,17 +44,18 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'services/orchestration-engine'); from app.main import app; print('orchestration-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/workflow-engine'); from app.main import app; print('workflow-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/persistence-layer'); from app.main import app; print('persistence-layer OK')"
-          python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; print('integration-pipeline OK')"
+          python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; from app.outcome import evaluate_outcome; from app.replay import replay_market_series; print('integration-pipeline OK')"
           python -c "import sys; sys.path.insert(0, 'services/echomatrix-core'); from app.main import app; print('echomatrix-core OK')"
+          python -c "import sys; sys.path.insert(0, 'services/research-lab'); from app.main import app; print('research-lab OK')"
 
-      - name: Run intelligence, AI, risk, and memory tests
+      - name: Run intelligence, risk, pipeline, outcome, and research tests
         run: |
           PYTHONPATH=services/research-intelligence python -m pytest services/research-intelligence/tests -q
           PYTHONPATH=services/strategy-engine python -m pytest services/strategy-engine/tests -q
           PYTHONPATH=services/integration-pipeline python -m pytest services/integration-pipeline/tests -q
-          PYTHONPATH=services/ai-core python -m pytest services/ai-core/tests -q
           PYTHONPATH=services/risk-engine python -m pytest services/risk-engine/tests -q
           PYTHONPATH=services/intelligence-memory python -m pytest services/intelligence-memory/tests -q
+          PYTHONPATH=services/research-lab python -m pytest services/research-lab/tests -q
 
       - name: Run EchoMatrix core tests
         run: |

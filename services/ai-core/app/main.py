@@ -8,9 +8,9 @@ from app.models import AIRequest, AIResponse, DecisionContextRequest, DecisionCo
 from app.providers import AIClient, AIProviderError
 
 app = FastAPI(
-    title="Ecometrics AI Core",
-    description="Provider-neutral intelligence layer for Gemini and Groq.",
-    version="0.2.0",
+    title="EchoMatrix AI Core",
+    description="Provider-neutral intelligence layer for Gemini, Groq, and DeepSeek.",
+    version="0.3.0",
 )
 
 
@@ -18,21 +18,24 @@ def _client() -> AIClient:
     return AIClient(
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
     )
 
 
 @app.get("/", tags=["meta"])
-def root() -> dict[str, str]:
+def root() -> dict[str, str | list[str]]:
     return {
-        "service": "ecometrics-ai-core",
+        "service": "echomatrix-ai-core",
         "message": "The intelligence layer stays above risk and execution.",
         "context_engine": "enabled",
+        "providers": ["gemini", "groq", "deepseek"],
+        "execution": "false",
     }
 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "ai-core", "mode": "simulation"}
+    return {"status": "ok", "service": "ai-core", "mode": "simulation", "execution": "false"}
 
 
 @app.post("/generate", response_model=AIResponse, tags=["ai"])
