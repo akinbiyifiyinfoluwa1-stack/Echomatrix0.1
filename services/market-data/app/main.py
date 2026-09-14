@@ -1,4 +1,4 @@
-"""Market Data service: real market observations for the EchoMatrix brain."""
+"""Market Data service: broad real market observations for the EchoMatrix brain."""
 from __future__ import annotations
 
 import os
@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException, Query
 
+from app.biquote_public import BiquotePublicProvider
 from app.binance_public import BinancePublicProvider
 from app.coinbase_public import CoinbasePublicProvider
 from app.collector import MarketCollector
@@ -16,13 +17,13 @@ from app.normalizer import normalize_candles
 from app.providers import MarketDataProviderError
 
 providers = {
+    "biquote-public": BiquotePublicProvider(),
     "binance-public": BinancePublicProvider(),
     "coinbase-public": CoinbasePublicProvider(),
 }
 
 
 def _collector_error(exc: Exception) -> None:
-    # Keep collector failures observable without taking down the API process.
     print(f"[market-collector] {exc}")
 
 
@@ -31,8 +32,15 @@ collector = MarketCollector(providers)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    symbols = [s.strip().upper() for s in os.getenv("MARKET_COLLECT_SYMBOLS", "BTC/USD,ETH/USD").split(",") if s.strip()]
-    timeframe = os.getenv("MARKET_COLLECT_TIMEFRAME", "1m")
+    symbols = [
+        s.strip().upper()
+        for s in os.getenv(
+            "MARKET_COLLECT_SYMBOLS",
+            "EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,NZDUSD,USDCHF,XAUUSD,USOIL,UKOIL,US30,US500,USTEC,DE40,UK100,AAPL,MSFT,NVDA,TSLA,SPY,QQQ,BTC/USD,ETH/USD",
+        ).split(",")
+        if s.strip()
+    ]
+    timeframe = os.getenv("MARKET_COLLECT_TIMEFRAME", "1h")
     interval = int(os.getenv("MARKET_COLLECT_INTERVAL_SECONDS", "60"))
     collector.start(symbols, timeframe, interval_seconds=interval, limit=100, on_error=_collector_error)
     yield
@@ -42,7 +50,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="EchoMatrix Market Data",
     description="Read-only real market-data layer for the EchoMatrix Financial & Wealth OS.",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -59,6 +67,7 @@ def root() -> dict:
         "service": "echomatrix-market-data",
         "mode": "real-market-data-read-only",
         "providers": list(providers),
+        "coverage": ["forex", "stocks", "indices", "commodities", "metals", "energy", "crypto"],
         "automatic_collection": True,
         "execution": False,
         "message": "The brain receives real market observations before any execution layer exists.",
@@ -82,16 +91,40 @@ def health() -> dict:
 def market_providers() -> dict:
     return {
         "mode": "real-market-data-read-only",
-        "providers": [{"name": name, "execution": False} for name in providers],
+        "providers": [
+            {
+                "name": name,
+                "execution": False,
+                "coverage": ["forex", "stocks", "indices", "commodities", "metals", "energy"]
+                if name == "biquote-public"
+                else ["crypto"],
+            }
+            for name in providers
+        ],
     }
+
+
+@app.get("/market/symbols", tags=["real-market-data"])
+def market_symbols(
+    asset_type: str | None = Query(default=None),
+    live_only: bool = False,
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict:
+    """Discover the broad multi-asset instrument catalogue."""
+    provider = _provider("biquote-public")
+    try:
+        symbols = provider.symbols(asset_type=asset_type, live_only=live_only, limit=limit)
+    except MarketDataProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"mode": "real-market-data-read-only", "source": provider.name, "count": len(symbols), "symbols": symbols}
 
 
 @app.get("/market/candles", tags=["real-market-data"])
 def market_candles(
-    symbol: str = Query(default="BTC/USD"),
-    timeframe: str = Query(default="1m"),
+    symbol: str = Query(default="EURUSD"),
+    timeframe: str = Query(default="1h"),
     limit: int = Query(default=100, ge=2, le=1000),
-    source: str = Query(default="binance-public"),
+    source: str = Query(default="biquote-public"),
 ) -> dict:
     """Fetch actual public market candles and pass them through quality gates."""
     try:
@@ -130,10 +163,9 @@ def market_candles(
 
 @app.post("/market/collect", tags=["real-market-data"])
 def collect_now(
-    symbols: str = Query(default="BTC/USD,ETH/USD"),
-    timeframe: str = Query(default="1m"),
+    symbols: str = Query(default="EURUSD,GBPUSD,USDJPY,XAUUSD,USOIL,US500,BTC/USD,ETH/USD"),
+    timeframe: str = Query(default="1h"),
 ) -> dict:
-    """Immediately collect real observations; intended for diagnostics and backfills."""
     selected = [item.strip().upper() for item in symbols.split(",") if item.strip()]
     return collector.collect_once(selected, timeframe=timeframe, limit=100)
 
