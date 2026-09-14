@@ -22,6 +22,7 @@ class PipelineRequest(BaseModel):
     account_id: str = Field(default="pipeline-demo", min_length=1)
     initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
     fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
+    mark_price: Decimal | None = Field(default=None, gt=0)
 
 
 class PipelineResult(BaseModel):
@@ -34,10 +35,14 @@ class PipelineResult(BaseModel):
     stages_completed: list[str]
     strategy: dict | None = None
     research: dict | None = None
+    memory_context: list[dict] = Field(default_factory=list)
     ai_analysis: dict | None = None
     risk_decision: dict | None = None
     allocation_decision: dict | None = None
+    orchestration_decision: dict | None = None
     persisted_record_id: str | None = None
     simulation_fill: dict | None = None
+    outcome: dict | None = None
+    learning_result: dict | None = None
     portfolio_state: dict | None = None
     audit_record_id: str | None = None
