@@ -18,8 +18,11 @@ from app.advanced import (
     StrategyCandidate,
 )
 from app.validation import temporal_split, walk_forward_windows, leakage_report, summarize_oos
+from app.robustness import (
+    StressScenario, stress_matrix, monte_carlo_outcomes, robustness_score,
+)
 
-app = FastAPI(title="EchoMatrix Brain Runtime", version="2.1.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
+app = FastAPI(title="EchoMatrix Brain Runtime", version="2.2.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
 memory = LearningMemory(); durable = DurableMemory(); autonomous = AutonomousSimulation()
 last_cycle: dict | None = None
 
@@ -31,7 +34,7 @@ async def fetch_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
     return data.get("candles", data) if isinstance(data, dict) else data
 
 @app.get("/", tags=["meta"])
-def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":12}
+def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":14}
 
 @app.get("/health", tags=["meta"])
 def health(): return {"status":"ok","service":"brain-runtime","execution":False}
@@ -114,5 +117,23 @@ def walk_forward(payload: dict):
 @app.post("/brain/oos-summary", tags=["validation"])
 def oos_summary(payload: dict): return summarize_oos(payload.get("results", []))
 
+@app.post("/brain/stress-test", tags=["robustness"])
+def stress_test(payload: dict):
+    results = payload.get("results", [])
+    scenarios = [StressScenario(**item) for item in payload.get("scenarios", [])] or None
+    return stress_matrix(results, scenarios)
+
+@app.post("/brain/monte-carlo", tags=["robustness"])
+def monte_carlo(payload: dict):
+    return monte_carlo_outcomes(payload.get("results", []), int(payload.get("iterations", 500)), int(payload.get("seed", 42)))
+
+@app.post("/brain/robustness", tags=["robustness"])
+def robustness(payload: dict):
+    results = payload.get("results", [])
+    scenarios = [StressScenario(**item) for item in payload.get("scenarios", [])] or None
+    stress = stress_matrix(results, scenarios)
+    monte_carlo = monte_carlo_outcomes(results, int(payload.get("iterations", 500)), int(payload.get("seed", 42)))
+    return {"stress": stress, "monte_carlo": monte_carlo, "score": robustness_score(stress, monte_carlo)}
+
 @app.get("/brain/status", tags=["diagnostics"])
-def status(): return {"status":"ready","last_cycle":last_cycle,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":12,"validation_layer":True}
+def status(): return {"status":"ready","last_cycle":last_cycle,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":14,"validation_layer":True,"robustness_layer":True}
