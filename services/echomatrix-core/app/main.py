@@ -10,14 +10,14 @@ from app.models import CycleRequest
 app = FastAPI(
     title="EchoMatrix Core",
     description="Simulation-first intelligence runtime. No live execution.",
-    version="0.3.0",
+    version="0.4.0",
 )
 core = EchoMatrixCore()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "echomatrix-core", "mode": "simulation"}
+    return {"status": "ok", "service": "echomatrix-core", "mode": "simulation", "brain_loop": "connected"}
 
 
 @app.get("/")
@@ -27,31 +27,24 @@ def root() -> dict[str, str]:
         "message": "Build the brain first. Give the brain a body later.",
         "pipeline": "connected",
         "market_data": "connected",
+        "brain_loop": "market→research→strategy→ai→risk→allocation→simulation→memory→learning",
+        "real_money_execution": "false",
     }
 
 
 @app.post("/cycle")
 def cycle(request: CycleRequest) -> dict:
-    """Run the deterministic core baseline without external service calls."""
     return core.run_cycle(request).model_dump(mode="json")
 
 
 @app.post("/demo/cycle")
 def demo_cycle() -> dict:
-    request = CycleRequest(
-        symbol="BTC/USD",
-        price="102000",
-        previous_price="100000",
-        volume="1",
-    )
+    request = CycleRequest(symbol="BTC/USD", price="102000", previous_price="100000", volume="1")
     return core.run_cycle(request).model_dump(mode="json")
 
 
 async def _run_pipeline(payload: dict) -> dict:
-    pipeline_url = os.getenv(
-        "INTEGRATION_PIPELINE_URL",
-        "http://integration-pipeline:8000",
-    ).rstrip("/")
+    pipeline_url = os.getenv("INTEGRATION_PIPELINE_URL", "http://integration-pipeline:8000").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(f"{pipeline_url}/pipeline/run", json=payload)
@@ -88,23 +81,13 @@ def _pipeline_payload(request: CycleRequest) -> dict:
 
 @app.post("/end-to-end")
 async def end_to_end(request: CycleRequest) -> dict:
-    """Delegate a supplied observation to the canonical multi-service brain."""
     result = await _run_pipeline(_pipeline_payload(request))
-    return {
-        "service": "echomatrix-core",
-        "mode": "simulation",
-        "real_money_execution": False,
-        "cycle": result,
-    }
+    return {"service": "echomatrix-core", "mode": "simulation", "real_money_execution": False, "cycle": result}
 
 
 @app.post("/data-driven-cycle")
 async def data_driven_cycle() -> dict:
-    """Fetch the latest normalized market observation before running the brain."""
-    market_url = os.getenv(
-        "MARKET_DATA_URL",
-        "http://market-data:8000",
-    ).rstrip("/")
+    market_url = os.getenv("MARKET_DATA_URL", "http://market-data:8000").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(f"{market_url}/demo/candle")
@@ -128,3 +111,9 @@ async def data_driven_cycle() -> dict:
         "observation": candle,
         "cycle": result,
     }
+
+
+@app.post("/brain-cycle")
+async def brain_cycle() -> dict:
+    """Run one complete sensory-to-learning simulation cycle."""
+    return await data_driven_cycle()
