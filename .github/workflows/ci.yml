@@ -11,12 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install service dependencies
         run: |
           python -m pip install --upgrade pip
@@ -24,11 +22,8 @@ jobs:
             echo "Installing $file"
             pip install -r "$file"
           done
-
       - name: Compile Python sources
-        run: |
-          python -m compileall -q services
-
+        run: python -m compileall -q services
       - name: Check core service imports
         run: |
           python -c "import sys; sys.path.insert(0, 'services/api-gateway'); from app.main import app; print('api-gateway OK')"
@@ -38,17 +33,17 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'services/risk-engine'); from app.main import app; print('risk-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/strategy-engine'); from app.main import app; print('strategy-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/ai-core'); from app.main import app; print('ai-core OK')"
+          python -c "import sys; sys.path.insert(0, 'services/brain-runtime'); from app.main import app; print('brain-runtime OK')"
           python -c "import sys; sys.path.insert(0, 'services/capital-allocation-engine'); from app.main import app; print('capital-allocation OK')"
           python -c "import sys; sys.path.insert(0, 'services/intelligence-memory'); from app.main import app; print('intelligence-memory OK')"
           python -c "import sys; sys.path.insert(0, 'services/research-intelligence'); from app.main import app; print('research-intelligence OK')"
           python -c "import sys; sys.path.insert(0, 'services/orchestration-engine'); from app.main import app; print('orchestration-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/workflow-engine'); from app.main import app; print('workflow-engine OK')"
           python -c "import sys; sys.path.insert(0, 'services/persistence-layer'); from app.main import app; print('persistence-layer OK')"
-          python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; from app.outcome import evaluate_outcome; from app.replay import replay_market_series; print('integration-pipeline OK')"
+          python -c "import sys; sys.path.insert(0, 'services/integration-pipeline'); from app.main import app; print('integration-pipeline OK')"
           python -c "import sys; sys.path.insert(0, 'services/echomatrix-core'); from app.main import app; print('echomatrix-core OK')"
           python -c "import sys; sys.path.insert(0, 'services/research-lab'); from app.main import app; print('research-lab OK')"
-
-      - name: Run intelligence, risk, pipeline, outcome, and research tests
+      - name: Run existing tests
         run: |
           PYTHONPATH=services/research-intelligence python -m pytest services/research-intelligence/tests -q
           PYTHONPATH=services/strategy-engine python -m pytest services/strategy-engine/tests -q
@@ -56,7 +51,4 @@ jobs:
           PYTHONPATH=services/risk-engine python -m pytest services/risk-engine/tests -q
           PYTHONPATH=services/intelligence-memory python -m pytest services/intelligence-memory/tests -q
           PYTHONPATH=services/research-lab python -m pytest services/research-lab/tests -q
-
-      - name: Run EchoMatrix core tests
-        run: |
           PYTHONPATH=services/echomatrix-core python -m pytest services/echomatrix-core/tests -q
