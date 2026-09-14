@@ -1,8 +1,8 @@
 """HTTP coordinator connecting EchoMatrix services end-to-end.
 
-The pipeline calls the real domain service contracts in sequence. It is
-simulation-first: approved decisions may produce paper fills, but no broker
-or exchange receives an order.
+The pipeline is simulation-first: risk is authoritative before AI interpretation,
+paper fills are marked to market, and the resulting outcome feeds the learning loop.
+No broker, exchange, wallet, or real-money execution is performed.
 """
 import os
 from datetime import datetime, timezone
@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 
 from app.models import PipelineRequest, PipelineResult
+from app.outcome import evaluate_outcome
 
 
 class PipelineError(RuntimeError):
@@ -52,6 +53,11 @@ class EchoMatrixPipeline:
         portfolio_state = None
         research = None
         ai_analysis = None
+        memory_context: list[dict] = []
+        outcome = None
+        learning_result = None
+        persisted_id = None
+        audit_id = None
 
         async with httpx.AsyncClient(timeout=30) as client:
             await self._get(client, "market-data", "/health")
@@ -73,6 +79,7 @@ class EchoMatrixPipeline:
                 "volume": str(request.volume),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
             strategy = await self._post(client, "strategy", "/ensemble", observation)
             stages.append("strategy-ensemble")
 
@@ -85,21 +92,18 @@ class EchoMatrixPipeline:
             })
             stages.append("research-context")
 
-            if request.use_ai:
-                ai_analysis = await self._post(client, "ai", "/generate", {
-                    "provider": "gemini",
-                    "prompt": (
-                        f"Market observation={observation}; strategy ensemble={strategy}; "
-                        f"research context={research}. Analyze the evidence, identify uncertainty, "
-                        "state directional bias and confidence, and do not execute trades."
-                    ),
-                    "system_instruction": "You are EchoMatrix AI Core. Analyze evidence conservatively and never execute trades.",
-                    "temperature": 0.2,
-                })
-            else:
-                ai_analysis = {"provider": "disabled", "content": "AI disabled for this run"}
-            stages.append("ai-core")
+            # Memory is recalled before interpretation so the AI can compare the current
+            # observation with prior simulated decisions and lessons.
+            memory_context = await self._post(client, "memory", "/memories/search", {
+                "query": f"{request.symbol} strategy research risk outcome",
+                "symbol": request.symbol,
+                "limit": 10,
+            })
+            stages.append("memory-recall")
 
+            # Risk is evaluated BEFORE AI interpretation. The risk engine remains the
+            # authoritative gate, and AI receives the actual risk decision rather than
+            # a pre-risk approximation.
             risk = await self._post(client, "risk", "/evaluate", {
                 "portfolio_equity": str(request.portfolio_equity),
                 "current_exposure": str(request.current_exposure),
@@ -110,6 +114,22 @@ class EchoMatrixPipeline:
             })
             stages.append("risk")
 
+            if request.use_ai:
+                ai_analysis = await self._post(client, "ai", "/analyze-context", {
+                    "observation": observation,
+                    "strategy": strategy,
+                    "research": research,
+                    "risk": risk,
+                    "memory": memory_context,
+                    "provider": "gemini",
+                    "temperature": 0.2,
+                })
+            else:
+                ai_analysis = {"provider": "disabled", "analysis": "AI disabled for this run"}
+            stages.append("ai-core")
+
+            # The deterministic orchestration layer remains the action authority. AI
+            # supplies context; it does not get a direct execution path.
             allocation = await self._post(client, "allocation", "/allocate", {
                 "available_capital": str(request.portfolio_equity),
                 "proposed_position_value": str(request.proposed_position_value),
@@ -138,8 +158,11 @@ class EchoMatrixPipeline:
             stages.append("decision")
 
             allocated_value = Decimal(str(decision["allowed_position_value"]))
+            quantity = Decimal("0")
+            entry_fee = Decimal("0")
             if request.simulate and decision["action"] in {"buy", "sell"} and allocated_value > 0:
                 quantity = allocated_value / request.price
+                entry_fee = quantity * request.price * request.fee_rate
                 simulation_fill = await self._post(client, "simulation", "/simulate", {
                     "account_id": request.account_id,
                     "initial_cash": str(request.initial_cash),
@@ -157,7 +180,7 @@ class EchoMatrixPipeline:
                     "side": decision["action"],
                     "quantity": str(quantity),
                     "price": str(request.price),
-                    "fee": str(Decimal(str(quantity)) * request.price * request.fee_rate),
+                    "fee": str(entry_fee),
                     "mark_price": str(request.price),
                 })
                 stages.append("portfolio-update")
@@ -169,8 +192,87 @@ class EchoMatrixPipeline:
                     params={"initial_cash": str(request.initial_cash)},
                 )
 
-            persisted_id = None
-            audit_id = None
+            # Outcome evaluation is deliberately mark-to-market. A caller may provide a
+            # later simulated mark; otherwise we record an entry mark and avoid inventing
+            # future market data.
+            if simulation_fill:
+                mark_price = request.mark_price or request.price
+                outcome = evaluate_outcome(
+                    action=decision["action"],
+                    entry_price=request.price,
+                    mark_price=mark_price,
+                    quantity=quantity,
+                    entry_fee=entry_fee,
+                    exit_fee_rate=request.fee_rate,
+                    risk_amount=Decimal(str(decision["risk_amount"])),
+                )
+                if request.mark_price is None:
+                    outcome["status"] = "awaiting-future-mark"
+                stages.append("outcome-evaluated")
+
+            # Write the research memory explicitly; outcome and decision memories are
+            # followed by a learning call that turns results into an adjustment.
+            await self._post(client, "memory", "/memories", {
+                "memory_id": str(uuid4()),
+                "symbol": request.symbol,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "integration-pipeline",
+                "memory_type": "research",
+                "title": f"Research context: {request.symbol}",
+                "content": str(research),
+                "confidence": str(research["confidence"]),
+                "tags": ["research", "context"],
+            })
+            await self._post(client, "memory", "/memories", {
+                "memory_id": str(uuid4()),
+                "symbol": request.symbol,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "integration-pipeline",
+                "memory_type": "observation",
+                "title": f"Market observation: {request.symbol}",
+                "content": f"Price={request.price}; previous_price={request.previous_price}; volume={request.volume}.",
+                "confidence": str(research["confidence"]),
+                "tags": ["market", "observation"],
+            })
+            await self._post(client, "memory", "/memories", {
+                "memory_id": str(uuid4()),
+                "symbol": request.symbol,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "integration-pipeline",
+                "memory_type": "decision",
+                "title": f"Decision: {decision['action']} {request.symbol}",
+                "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}; strategy={strategy['strategy']}; risk={risk}.",
+                "confidence": str(decision["confidence"]),
+                "tags": ["decision", "strategy", "risk", "allocation"],
+            })
+            if outcome:
+                await self._post(client, "memory", "/memories", {
+                    "memory_id": str(uuid4()),
+                    "symbol": request.symbol,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "integration-pipeline",
+                    "memory_type": "outcome",
+                    "title": f"Simulated outcome: {request.symbol}",
+                    "content": str(outcome),
+                    "confidence": str(decision["confidence"]),
+                    "tags": ["outcome", "simulation", "mark-to-market"],
+                })
+            stages.append("intelligence-memory")
+
+            # Learning consumes the actual simulated result and risk score. If no later
+            # mark exists yet, the lesson explicitly knows the outcome is provisional.
+            simulated_return = Decimal(str(outcome["return_pct"])) if outcome else Decimal("0")
+            learning_result = await self._post(client, "memory", "/learn", {
+                "symbol": request.symbol,
+                "action": decision["action"],
+                "strategy": strategy["strategy"],
+                "simulated_return": str(simulated_return),
+                "risk_score": str(risk["risk_score"]),
+                "confidence": str(decision["confidence"]),
+                "context": f"outcome={outcome}; ai={ai_analysis}; memory_items={len(memory_context)}",
+            })
+            stages.append("learning")
+
             if request.persist:
                 persisted_id = str(uuid4())
                 now = datetime.now(timezone.utc).isoformat()
@@ -181,13 +283,17 @@ class EchoMatrixPipeline:
                     "symbol": request.symbol,
                     "payload": {
                         "correlation_id": correlation_id,
+                        "observation": observation,
+                        "memory_context": memory_context,
                         "strategy": strategy,
                         "research": research,
-                        "ai_analysis": ai_analysis,
                         "risk": risk,
+                        "ai_analysis": ai_analysis,
                         "allocation": allocation,
                         "decision": decision,
                         "simulation_fill": simulation_fill,
+                        "outcome": outcome,
+                        "learning_result": learning_result,
                         "portfolio_state": portfolio_state,
                     },
                     "created_at": now,
@@ -196,63 +302,32 @@ class EchoMatrixPipeline:
                 audit_id = stored["record_id"]
                 stages.append("persistence")
 
-            memory_payloads = [
-                {
-                    "memory_type": "observation",
-                    "title": f"Market observation: {request.symbol}",
-                    "content": f"Price={request.price}; previous_price={request.previous_price}; volume={request.volume}.",
-                    "confidence": str(research["confidence"]),
-                    "tags": ["market", "observation", "research"],
-                },
-                {
-                    "memory_type": "decision",
-                    "title": f"Decision: {decision['action']} {request.symbol}",
-                    "content": f"Action={decision['action']}; confidence={decision['confidence']}; allocated_value={allocated_value}; strategy={strategy['strategy']}.",
-                    "confidence": str(decision["confidence"]),
-                    "tags": ["decision", "strategy", "risk", "allocation"],
-                },
-            ]
-            if simulation_fill:
-                memory_payloads.append({
-                    "memory_type": "outcome",
-                    "title": f"Simulated outcome: {request.symbol}",
-                    "content": f"Simulation fill recorded for {decision['action']} with quantity={quantity} at price={request.price}.",
-                    "confidence": str(decision["confidence"]),
-                    "tags": ["outcome", "simulation"],
-                })
-
-            for memory in memory_payloads:
-                await self._post(client, "memory", "/memories", {
-                    "memory_id": str(uuid4()),
-                    "symbol": request.symbol,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "source": "integration-pipeline",
-                    **memory,
-                })
-            stages.append("intelligence-memory")
-
             events = [
                 ("market.update", "market-data"),
                 ("strategy.signal", "strategy"),
                 ("research.ready", "research"),
-                ("ai.analysis", "ai-core"),
+                ("memory.recalled", "intelligence-memory"),
                 ("risk.decision", "risk"),
+                ("ai.analysis", "ai-core"),
                 ("capital.allocation", "capital-allocation"),
                 ("trade.decision", "orchestration"),
             ]
             if simulation_fill:
                 events.append(("simulation.fill", "simulation"))
-                events.append(("outcome.recorded", "portfolio-engine"))
-            else:
-                events.append(("outcome.recorded", "integration-pipeline"))
+            events.append(("outcome.recorded", "integration-pipeline"))
             events.append(("memory.written", "intelligence-memory"))
+            events.append(("learning.updated", "intelligence-memory"))
 
             for event_type, source in events:
                 await self._post(client, "workflow", f"/workflows/{workflow['workflow_id']}/events", {
                     "correlation_id": workflow["correlation_id"],
                     "event_type": event_type,
                     "source": source,
-                    "payload": {"symbol": request.symbol, "correlation_id": correlation_id, "account_id": request.account_id},
+                    "payload": {
+                        "symbol": request.symbol,
+                        "correlation_id": correlation_id,
+                        "account_id": request.account_id,
+                    },
                 })
             stages.append("workflow-events")
 
@@ -266,11 +341,15 @@ class EchoMatrixPipeline:
             stages_completed=stages,
             strategy=strategy,
             research=research,
+            memory_context=memory_context,
             ai_analysis=ai_analysis,
             risk_decision=risk,
             allocation_decision=allocation,
+            orchestration_decision=decision,
             persisted_record_id=persisted_id,
             simulation_fill=simulation_fill,
+            outcome=outcome,
+            learning_result=learning_result,
             portfolio_state=portfolio_state,
             audit_record_id=audit_id,
         )
