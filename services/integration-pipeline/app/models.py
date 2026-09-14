@@ -25,6 +25,14 @@ class PipelineRequest(BaseModel):
     mark_price: Decimal | None = Field(default=None, gt=0)
 
 
+class ReplayRequest(BaseModel):
+    symbol: str = Field(default="BTC/USD", min_length=1)
+    prices: list[Decimal] = Field(min_length=2)
+    initial_cash: Decimal = Field(default=Decimal("10000"), gt=0)
+    fee_rate: Decimal = Field(default=Decimal("0.001"), ge=0, le=1)
+    allocation_fraction: Decimal = Field(default=Decimal("0.10"), ge=0, le=1)
+
+
 class PipelineResult(BaseModel):
     correlation_id: str
     symbol: str
