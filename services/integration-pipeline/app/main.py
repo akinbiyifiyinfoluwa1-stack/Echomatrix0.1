@@ -1,6 +1,7 @@
 """EchoMatrix end-to-end intelligence pipeline API."""
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -32,12 +33,7 @@ async def portfolio_get(path: str, params: dict | None = None) -> dict | list:
 
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
-    return {
-        "service": "echomatrix-integration-pipeline",
-        "mode": "simulation-first",
-        "message": "Connect the brain end-to-end before giving it a real-money body.",
-        "multi_cycle_replay": "enabled",
-    }
+    return {"service": "echomatrix-integration-pipeline", "mode": "simulation-first", "message": "Connect the brain end-to-end before giving it a real-money body.", "multi_cycle_replay": "enabled"}
 
 
 @app.get("/health", tags=["meta"])
@@ -76,12 +72,7 @@ async def replay_pipeline(request: ReplayRequest) -> dict:
     """Replay many simulated market states in one request; never executes externally."""
     global last_replay
     try:
-        last_replay = replay_market_series(
-            request.prices,
-            initial_cash=request.initial_cash,
-            fee_rate=request.fee_rate,
-            allocation_fraction=request.allocation_fraction,
-        )
+        last_replay = replay_market_series(request.prices, initial_cash=request.initial_cash, fee_rate=request.fee_rate, allocation_fraction=request.allocation_fraction)
         last_replay["symbol"] = request.symbol
         return last_replay
     except ValueError as exc:
