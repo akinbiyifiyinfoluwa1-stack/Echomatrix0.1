@@ -54,3 +54,4 @@ class PipelineResult(BaseModel):
     learning_result: dict | None = None
     portfolio_state: dict | None = None
     audit_record_id: str | None = None
+    brain_v1: dict | None = None
