@@ -52,3 +52,4 @@ jobs:
           PYTHONPATH=services/intelligence-memory python -m pytest services/intelligence-memory/tests -q
           PYTHONPATH=services/research-lab python -m pytest services/research-lab/tests -q
           PYTHONPATH=services/echomatrix-core python -m pytest services/echomatrix-core/tests -q
+          PYTHONPATH=services/brain-runtime python -m pytest services/brain-runtime/tests -q
