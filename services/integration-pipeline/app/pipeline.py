@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 
 from app.models import PipelineRequest, PipelineResult
+from app.brain_v1 import build_brain_v1_pipeline_record
 
 
 class PipelineError(RuntimeError):
@@ -87,7 +88,6 @@ class EchoMatrixPipeline:
             })
             stages.append("research-context")
 
-            # Retrieve relevant prior lessons before asking AI to reason.
             try:
                 memory_context = await self._post(client, "memory", "/memories/search", {
                     "query": f"{request.symbol} {strategy.get('strategy', 'strategy')} risk lesson outcome",
@@ -126,7 +126,6 @@ class EchoMatrixPipeline:
             })
             stages.append("risk")
 
-            # AI receives risk before final orchestration; the risk engine remains authoritative.
             allocation = await self._post(client, "allocation", "/allocate", {
                 "available_capital": str(request.portfolio_equity),
                 "proposed_position_value": str(request.proposed_position_value),
@@ -256,7 +255,6 @@ class EchoMatrixPipeline:
                 })
             stages.append("intelligence-memory")
 
-            # Turn the current simulated result into an explicit lesson for the next cycle.
             simulated_return = Decimal("0")
             if simulation_fill:
                 fill_price = Decimal(str(simulation_fill.get("fill_price", request.price)))
@@ -273,6 +271,24 @@ class EchoMatrixPipeline:
             })
             stages.append("learning-loop")
 
+            brain_v1 = build_brain_v1_pipeline_record(
+                correlation_id=correlation_id,
+                symbol=request.symbol,
+                observation=observation,
+                strategy=strategy,
+                research=research,
+                ai_analysis=ai_analysis,
+                risk=risk,
+                allocation=allocation,
+                decision=decision,
+                simulation_fill=simulation_fill,
+                portfolio_state=portfolio_state,
+                learning_result=learning_result,
+                memory_context=memory_context,
+                persisted_record_id=persisted_id,
+            )
+            stages.append("brain-v1")
+
             events = [
                 ("market.update", "market-data"),
                 ("strategy.signal", "strategy"),
@@ -282,6 +298,7 @@ class EchoMatrixPipeline:
                 ("risk.decision", "risk"),
                 ("capital.allocation", "capital-allocation"),
                 ("trade.decision", "orchestration"),
+                ("brain.v1.completed", "integration-pipeline"),
             ]
             if simulation_fill:
                 events.append(("simulation.fill", "simulation"))
@@ -312,11 +329,16 @@ class EchoMatrixPipeline:
             stages_completed=stages,
             strategy=strategy,
             research=research,
+            memory_context=memory_context,
             ai_analysis=ai_analysis,
             risk_decision=risk,
             allocation_decision=allocation,
+            orchestration_decision=decision,
             persisted_record_id=persisted_id,
             simulation_fill=simulation_fill,
+            outcome={"simulated_return": str(simulated_return), "simulation_only": True},
+            learning_result=learning_result,
             portfolio_state=portfolio_state,
             audit_record_id=audit_id,
+            brain_v1=brain_v1,
         )
