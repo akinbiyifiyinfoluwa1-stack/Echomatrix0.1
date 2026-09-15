@@ -12,16 +12,14 @@ from app.allocation import allocation_snapshot
 from app.simulation import replay_returns, simulate_decision
 from app.council import run_council
 from app.learning import LearningMemory
-from app.advanced import (
-    full_brain_replay, evolve_strategies, evaluate_providers, portfolio_intelligence,
-    DurableMemory, ExternalIntelligence, SystemEvaluator, Hardening, AutonomousSimulation,
-    StrategyCandidate,
-)
+from app.advanced import (full_brain_replay, evolve_strategies, evaluate_providers, portfolio_intelligence, DurableMemory, ExternalIntelligence, SystemEvaluator, Hardening, AutonomousSimulation, StrategyCandidate)
 from app.validation import temporal_split, walk_forward_windows, leakage_report, summarize_oos
+from app.brain_v1 import build_brain_v1_cycle, research_scorecard
 
-app = FastAPI(title="EchoMatrix Brain Runtime", version="2.1.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
+app = FastAPI(title="EchoMatrix Brain Runtime", version="2.2.0", description="Simulation-only integrated intelligence runtime. No broker, wallet, or order execution.")
 memory = LearningMemory(); durable = DurableMemory(); autonomous = AutonomousSimulation()
 last_cycle: dict | None = None
+last_brain_v1: dict | None = None
 
 async def fetch_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
     base = os.getenv("MARKET_DATA_URL", "http://market-data:8000").rstrip("/")
@@ -31,14 +29,14 @@ async def fetch_candles(symbol: str, timeframe: str, limit: int) -> list[dict]:
     return data.get("candles", data) if isinstance(data, dict) else data
 
 @app.get("/", tags=["meta"])
-def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":12}
+def root(): return {"service":"echomatrix-brain-runtime","mode":"simulation-only","execution":False,"capabilities":14,"brain_v1":True}
 
 @app.get("/health", tags=["meta"])
 def health(): return {"status":"ok","service":"brain-runtime","execution":False}
 
 @app.post("/brain/cycle", response_model=BrainCycleResponse, tags=["brain"])
 async def cycle(request: BrainCycleRequest):
-    global last_cycle
+    global last_cycle, last_brain_v1
     try: raw = await fetch_candles(request.symbol, request.timeframe, request.limit)
     except Exception as exc: raise HTTPException(status_code=502, detail=f"market-data unavailable: {exc}") from exc
     try:
@@ -56,63 +54,57 @@ async def cycle(request: BrainCycleRequest):
     durable_hash=durable.write({"kind":"brain-cycle","symbol":request.symbol,"timeframe":request.timeframe,"features":features,"research":research,"strategy":strategy,"simulation":sim})
     trace=["market.observed","data.quality","market.state","research.ready","strategy.ensemble","ai.council","risk.gate","capital.allocation","simulation.fill","outcome.recorded","memory.learned","durable.memory"]
     last_cycle={"mode":"simulation-only","symbol":request.symbol,"timeframe":request.timeframe,"data_quality":quality,"market_state":features,"research":research,"strategy":strategy,"ai_council":council,"risk":risk,"allocation":allocation,"simulation":sim,"learning":learning,"durable_memory_hash":durable_hash,"trace":trace}
+    last_brain_v1=build_brain_v1_cycle(symbol=request.symbol,timeframe=request.timeframe,data_quality=quality,market_state=features,research=research,strategy=strategy,ai_council=council,risk=risk,allocation=allocation,simulation=sim,learning=learning,durable_memory_hash=durable_hash)
     return last_cycle
+
+@app.get("/brain/v1/latest", tags=["brain-v1"])
+def brain_v1_latest(): return last_brain_v1 or {"status":"no-cycle-yet","schema":"echomatrix.brain.v1","simulation_only":True}
+
+@app.post("/brain/v1/scorecard", tags=["brain-v1"])
+def brain_v1_scorecard(payload: dict): return research_scorecard(payload.get("replay", {}),oos=payload.get("oos"),stress=payload.get("stress"),monte_carlo=payload.get("monte_carlo"),provider_reliability=float(payload.get("provider_reliability",0)))
 
 @app.post("/brain/replay", tags=["research"])
 def replay(request: ReplayRequest):
     quality=validate_candles(request.candles)
     if not quality["valid"]: raise HTTPException(status_code=422, detail=quality)
-    result=replay_returns([float(c.close) for c in request.candles],float(request.allocation_fraction),float(request.fee_rate))
-    result["data_quality"]=quality; result["mode"]="historical-research"; result["simulation_only"]=True
+    result=replay_returns([float(c.close) for c in request.candles],float(request.allocation_fraction),float(request.fee_rate)); result["data_quality"]=quality; result["mode"]="historical-research"; result["simulation_only"]=True
     return result
 
 @app.post("/brain/full-replay", tags=["advanced"])
 def full_replay(request: ReplayRequest): return full_brain_replay(request.candles, float(request.initial_cash), float(request.fee_rate))
-
 @app.post("/brain/evolve", tags=["advanced"])
 def evolve(payload: dict):
     candidates=[StrategyCandidate(**x) for x in payload.get("candidates", [])]
     if not candidates: candidates=[StrategyCandidate("trend",.5,.3,.2,.2),StrategyCandidate("momentum",.2,.6,.2,.25),StrategyCandidate("volume",.25,.25,.5,.2)]
     return evolve_strategies(candidates, payload.get("results", {}), int(payload.get("generations",3)))
-
 @app.post("/brain/provider-evaluation", tags=["advanced"])
 def provider_evaluation(payload: dict): return evaluate_providers(payload.get("responses", {}))
-
 @app.post("/brain/portfolio-intelligence", tags=["advanced"])
 def portfolio(payload: dict): return portfolio_intelligence(payload.get("outcomes", []))
-
 @app.post("/brain/external-intelligence", tags=["advanced"])
 def external_intelligence(payload: dict): return {"items":ExternalIntelligence().normalize(payload.get("items", [])),"simulation_only":True}
-
 @app.get("/brain/memory", tags=["advanced"])
 def memory_read(limit: int = 100): return {"records":durable.read(limit),"durable":True,"simulation_only":True}
-
 @app.post("/brain/evaluate", tags=["advanced"])
 def evaluate(payload: dict): return SystemEvaluator().evaluate(payload.get("replay", {}), payload.get("expected", {}))
-
-@app.get("/brain/hardening", tags=["advanced"])
+@app.get("/brain/hardening", tags=["diagnostics"])
 def hardening(): return Hardening.run(dict(os.environ))
-
 @app.post("/brain/autonomous-simulation", tags=["advanced"])
 def autonomous_simulation(request: ReplayRequest): return autonomous.run(request.candles, 1)
 
 @app.post("/brain/validation", tags=["validation"])
 def validation(payload: dict):
     from app.models import Candle
-    candles = [Candle(**item) for item in payload.get("candles", [])]
-    report = __import__("app.validation", fromlist=["validate_candles"]).validate_candles(candles)
-    train, test = temporal_split(candles, float(payload.get("train_fraction", .70))) if len(candles) >= 2 else (candles, [])
-    return {**report.as_dict(), "train_count": len(train), "test_count": len(test), "leakage": leakage_report(train, test), "simulation_only": True}
-
+    candles=[Candle(**item) for item in payload.get("candles", [])]; report=__import__("app.validation", fromlist=["validate_candles"]).validate_candles(candles)
+    train,test=temporal_split(candles,float(payload.get("train_fraction",.70))) if len(candles)>=2 else (candles,[])
+    return {**report.as_dict(),"train_count":len(train),"test_count":len(test),"leakage":leakage_report(train,test),"simulation_only":True}
 @app.post("/brain/walk-forward", tags=["validation"])
 def walk_forward(payload: dict):
     from app.models import Candle
-    candles = [Candle(**item) for item in payload.get("candles", [])]
-    windows = walk_forward_windows(candles, int(payload.get("train_size", 100)), int(payload.get("test_size", 20)), payload.get("step"))
-    return {"windows": windows, "window_count": len(windows), "simulation_only": True}
-
+    candles=[Candle(**item) for item in payload.get("candles", [])]; windows=walk_forward_windows(candles,int(payload.get("train_size",100)),int(payload.get("test_size",20)),payload.get("step"))
+    return {"windows":windows,"window_count":len(windows),"simulation_only":True}
 @app.post("/brain/oos-summary", tags=["validation"])
 def oos_summary(payload: dict): return summarize_oos(payload.get("results", []))
 
 @app.get("/brain/status", tags=["diagnostics"])
-def status(): return {"status":"ready","last_cycle":last_cycle,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":12,"validation_layer":True}
+def status(): return {"status":"ready","last_cycle":last_cycle,"brain_v1":last_brain_v1,"memory_size":len(memory.records),"durable_memory":True,"real_money_execution":False,"advanced_capabilities":14,"validation_layer":True}
